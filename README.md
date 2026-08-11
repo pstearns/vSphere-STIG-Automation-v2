@@ -51,8 +51,15 @@ git config --global user.name "OVA Automation"
 git config --global user.email "peter.j.stearns.ctr@army.mil"
 ```
 
-## Repository Structure
+## Credential Management (Secure Vault)
+This wrapper uses a true AES-256 encrypted local vault to store vCenter, VCSA root, and ESXi root passwords. **No credentials are stored in plain text or tracked in Git.**
 
-/scripts/ - Contains custom bash/wrapper scripts that orchestrate the VMware tooling (inspec, powercli) using our environment variables.
+To add, update, or remove credentials for the automation engine, run the interactive Credential Manager on the OVA:
 
-/templates/ - Contains our customized EvaluateSTIG .yml and .json answer files, including documented exceptions and known-open items.
+```bash
+pwsh
+Import-Module /usr/share/stigs/custom/modules/CredentialManagement.psm1 -Force
+Invoke-CredentialManager -FilePath "/usr/share/stigs/custom/conf/.creds.json.encrypted"
+```
+---
+

@@ -1,0 +1,21 @@
+# VCSA Varibles
+# ==================================================================
+classification: "U"
+MARKING: "CUI"
+authprivlog: "/var/log/audit/sshinfo.log"
+syslogServers:
+  - "udp://n-lem:514"
+  - "139.231.126.50"
+  - "139.231.126.56"
+ntpServers:
+  - "139.231.126.100"
+  - "139.231.126.14"
+  - "139.231.125.150"
+  - "139.231.1.11"
+sslIssueOrg:
+  - "U.S. Government"
+  - "CIOG6"
+  - "USArmy"
+  - "G6"
+backup3rdParty: "false"
+embeddedIdp: "true"
