@@ -144,13 +144,14 @@ function Get-FormattedAnswer {
     $result = @{ Comments = ""; Status = "" }
     
     try {
-        # Cache the XML data globally to prevent excessive disk I/O on large profiles
-        if ($global:AnswerXmlData -and ($global:AnswerXmlPath -eq $AnswerFile)) {
-            $answerXmlData = $global:AnswerXmlData
+        # Thread-safe caching mechanism to prevent parallel collisions
+        if (-not $script:AnswerXmlCache) { $script:AnswerXmlCache = @{} }
+
+        if ($script:AnswerXmlCache.ContainsKey($AnswerFile)) {
+            $answerXmlData = $script:AnswerXmlCache[$AnswerFile]
         } else {
-            [xml]$answerXmlData   = [System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::UTF8.GetBytes((Get-Content -Path $AnswerFile -Raw)))
-            $global:AnswerXmlData = $answerXmlData
-            $global:AnswerXmlPath = $AnswerFile
+            [xml]$answerXmlData = [System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::UTF8.GetBytes((Get-Content -Path $AnswerFile -Raw)))
+            $script:AnswerXmlCache[$AnswerFile] = $answerXmlData
         }
 
         $answerEntry = $answerXmlData.SelectSingleNode("//STIG[@ID='$vulnRuleVer']")

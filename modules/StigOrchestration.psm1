@@ -5,7 +5,8 @@
 # =========================================================================
 
 # Define the root overlay path at the module scope
-$Script:OverlayRoot = "/usr/share/stigs/orchestration_overlay"
+# Define the root overlay path dynamically
+$Script:OverlayRoot = if (Test-Path "/usr/share/stigs/orchestration_overlay") { "/usr/share/stigs/orchestration_overlay" } else { (Resolve-Path "$PSScriptRoot/..").Path }
 
 # Load Dependencies and Workers dynamically from the Overlay Root
 Import-Module powershell-yaml -Force -ErrorAction Stop # Ensure YAML parsing is available
@@ -269,13 +270,21 @@ function Format-StigChecklist {
                 Write-Error "Failed to apply final formatting for $TargetName : $($_.Exception.Message)"
             }
 
-            # Cleanup Ephemeral Temp Files
-            Remove-Item "${TempBase}*.ckl" -Force -ErrorAction SilentlyContinue
-            
-            # Clean up the Raw JSON files from the worker if configured to do so
-            if ($AuditResult.RawJsonFile) { Remove-Item $AuditResult.RawJsonFile -Force -ErrorAction SilentlyContinue }
-            if ($AuditResult.ApiJsonFile) { Remove-Item $AuditResult.ApiJsonFile -Force -ErrorAction SilentlyContinue }
-            if ($AuditResult.SshJsonFile) { Remove-Item $AuditResult.SshJsonFile -Force -ErrorAction SilentlyContinue }
+            # --- Cleanup Ephemeral Temp and Raw Files ---
+            $FilesToRemove = @( (Get-ChildItem "${TempBase}*.ckl" -ErrorAction SilentlyContinue).FullName )
+            if ($AuditResult.RawJsonFile) { $FilesToRemove += $AuditResult.RawJsonFile }
+            if ($AuditResult.ApiJsonFile) { $FilesToRemove += $AuditResult.ApiJsonFile }
+            if ($AuditResult.SshJsonFile) { $FilesToRemove += $AuditResult.SshJsonFile }
+
+            foreach ($file in $FilesToRemove) {
+                if ($file -and (Test-Path $file)) {
+                    try {
+                        Remove-Item $file -Force -ErrorAction Stop
+                    } catch {
+                        Write-StigLog -Message "Cleanup Warning: Failed to remove ephemeral file $file - $($_.Exception.Message)" -Severity WARN -Source "Formatter"
+                    }
+                }
+            }
 
         } else {
             Write-Error "SAF CLI failed to generate Master Temp CKL for $TargetName"

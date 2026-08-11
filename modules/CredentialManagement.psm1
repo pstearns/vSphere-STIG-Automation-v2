@@ -4,7 +4,8 @@
 #              Includes an interactive menu for admins to manage passwords.
 # =========================================================================
 
-$Script:KeyPath = "/usr/share/stigs/orchestration_overlay/conf/vault.key"
+$OverlayRoot = if (Test-Path "/usr/share/stigs/orchestration_overlay") { "/usr/share/stigs/orchestration_overlay" } else { (Resolve-Path "$PSScriptRoot/..").Path }
+$Script:KeyPath = Join-Path $OverlayRoot "conf/vault.key"
 
 # ===============================
 # Region: True AES-256 Encryption
