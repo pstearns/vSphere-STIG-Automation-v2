@@ -4,7 +4,6 @@
 # and formats the final STIG checklists into the organized reporting tree.
 # =========================================================================
 
-# Define the root overlay path at the module scope safely
 if (Test-Path "/usr/share/stigs/orchestration_overlay") {
     $Script:OverlayRoot = "/usr/share/stigs/orchestration_overlay"
 } else {
@@ -15,22 +14,29 @@ if (Test-Path "/usr/share/stigs/orchestration_overlay") {
 Import-Module powershell-yaml -Global -Force -ErrorAction Stop 
 Import-Module (Join-Path $Script:OverlayRoot "modules/CredentialManagement.psm1") -Global -Force -ErrorAction Stop
 Import-Module (Join-Path $Script:OverlayRoot "modules/globalFunctions.psm1") -Global -Force -ErrorAction Stop
-Import-Module (Join-Path $Script:OverlayRoot "modules/vcsa/VcsaHelpers.psm1") -Global -Force
 
-# Worker modules do not strictly need -Global, but we will load them normally
-Import-Module (Join-Path $Script:OverlayRoot "modules/vcsa/Invoke-VcsaAudit.psm1") -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $Script:OverlayRoot "modules/esxi/Invoke-EsxiAudit.psm1") -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $Script:OverlayRoot "modules/vm/Invoke-VmAudit.psm1") -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $Script:OverlayRoot "modules/vcsa/VcsaHelpers.psm1") -Global -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $Script:OverlayRoot "modules/esxi/EsxiHelpers.psm1") -Global -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $Script:OverlayRoot "modules/vm/VmHelpers.psm1") -Global -Force -ErrorAction SilentlyContinue
+
+Import-Module (Join-Path $Script:OverlayRoot "modules/vcsa/Invoke-VcsaAudit.psm1") -Global -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $Script:OverlayRoot "modules/esxi/Invoke-EsxiAudit.psm1") -Global -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $Script:OverlayRoot "modules/vm/Invoke-VmAudit.psm1") -Global -Force -ErrorAction SilentlyContinue
 
 <#
 .SYNOPSIS
     Discovers vCenter inventory and builds the target manifest.
+.DESCRIPTION
+    Dynamically builds the execution manifest. Optimized to only query PowerCLI 
+    if ESXi or VM targets are explicitly requested, saving significant execution time.
 #>
 function Get-StigInventory {
     [CmdletBinding()]
     param (
         [string]$OverlayRoot = $Script:OverlayRoot,
-        [string]$VmExclusionRegex = "^vCLS|NSX|vCenter|Appliance.*"
+        [string]$VmExclusionRegex = "^vCLS|NSX|vCenter|Appliance.*",
+        [ValidateSet('All', 'VCSA', 'ESXi', 'VM')]
+        [string[]]$TargetType = @('All')
     )
 
     $CredentialFile = Join-Path $OverlayRoot "conf/.creds.json.encrypted"
@@ -40,18 +46,22 @@ function Get-StigInventory {
     if (-not $credentials.vCenters) { Throw "No vCenters found in the credential vault." }
 
     $MasterTargetList = [PSCustomObject]@{
-        vCenters  = @()
-        ESXiHosts = @()
-        VMs       = @()
+        vCenters  = $null
+        ESXiHosts = $null
+        VMs       = $null
     }
 
-    Write-Host "[*] Starting Dynamic Inventory Discovery..." -ForegroundColor Cyan
+    $getVcsa = ($TargetType -contains 'All' -or $TargetType -contains 'VCSA')
+    $getEsxi = ($TargetType -contains 'All' -or $TargetType -contains 'ESXi')
+    $getVm   = ($TargetType -contains 'All' -or $TargetType -contains 'VM')
+
+    Write-Host "[*] Starting Dynamic Inventory Discovery (Target Types: $($TargetType -join ', '))..." -ForegroundColor Cyan
 
     foreach ($entry in $credentials.vCenters) {
         $vCenterFQDN = $entry.FQDN
         $vCenterShortName = ($vCenterFQDN -split '\.')[0].ToUpper()
         
-        Write-Verbose "Querying $vCenterFQDN ($vCenterShortName)..."
+        Write-Verbose "Processing Credentials for $vCenterFQDN ($vCenterShortName)..."
         
         $credObj   = Get-vCenterCredential -FQDN $vCenterFQDN -FilePath $CredentialFile
         $adminUser = $credObj.AdminCred.UserName
@@ -59,54 +69,68 @@ function Get-StigInventory {
         $rootPass  = $credObj.RootCred.GetNetworkCredential().Password
         $esxiRoot  = $credObj.EsxiCred.GetNetworkCredential().Password
 
-        $VcsaReportDir = Join-Path $OverlayRoot "reports/$vCenterShortName/$DateStr/VCSA"
-        $EsxiReportDir = Join-Path $OverlayRoot "reports/$vCenterShortName/$DateStr/ESXi"
-        $VmReportDir   = Join-Path $OverlayRoot "reports/$vCenterShortName/$DateStr/VMs"
-
-        $MasterTargetList.vCenters += [PSCustomObject]@{
-            FQDN             = $vCenterFQDN
-            AdminUser        = $adminUser
-            AdminPass        = $adminPass
-            RootPass         = $rootPass
-            vCenterShortName = $vCenterShortName
-            DateStr          = $DateStr
-            ReportDir        = $VcsaReportDir
+        if ($getVcsa) {
+            $VcsaReportDir = Join-Path $OverlayRoot "reports/$vCenterShortName/$DateStr/VCSA"
+            if ($null -eq $MasterTargetList.vCenters) { $MasterTargetList.vCenters = @() }
+            
+            $MasterTargetList.vCenters += [PSCustomObject]@{
+                FQDN             = $vCenterFQDN
+                AdminUser        = $adminUser
+                AdminPass        = $adminPass
+                RootPass         = $rootPass
+                vCenterShortName = $vCenterShortName
+                DateStr          = $DateStr
+                ReportDir        = $VcsaReportDir
+            }
         }
 
-        try {
-            Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false | Out-Null
-            Connect-VIServer -Server $vCenterFQDN -User $adminUser -Password $adminPass -Force -ErrorAction Stop | Out-Null
-            
-            $Hosts = Get-VMHost
-            foreach ($h in $Hosts) {
-                $MasterTargetList.ESXiHosts += [PSCustomObject]@{ 
-                    Name             = $h.Name
-                    vCenter          = $vCenterFQDN
-                    AdminUser        = $adminUser
-                    AdminPass        = $adminPass
-                    RootPass         = $esxiRoot
-                    vCenterShortName = $vCenterShortName
-                    DateStr          = $DateStr
-                    ReportDir        = $EsxiReportDir
+        if ($getEsxi -or $getVm) {
+            try {
+                Write-Verbose "Connecting to PowerCLI for $vCenterFQDN to enumerate Hosts/VMs..."
+                Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false -Scope Session | Out-Null
+                Connect-VIServer -Server $vCenterFQDN -User $adminUser -Password $adminPass -Force -ErrorAction Stop | Out-Null
+                
+                if ($getEsxi) {
+                    $EsxiReportDir = Join-Path $OverlayRoot "reports/$vCenterShortName/$DateStr/ESXi"
+                    if ($null -eq $MasterTargetList.ESXiHosts) { $MasterTargetList.ESXiHosts = @() }
+                    
+                    $Hosts = Get-VMHost
+                    foreach ($h in $Hosts) {
+                        $MasterTargetList.ESXiHosts += [PSCustomObject]@{ 
+                            Name             = $h.Name
+                            vCenter          = $vCenterFQDN
+                            AdminUser        = $adminUser
+                            AdminPass        = $adminPass
+                            RootPass         = $esxiRoot
+                            vCenterShortName = $vCenterShortName
+                            DateStr          = $DateStr
+                            ReportDir        = $EsxiReportDir
+                        }
+                    }
                 }
-            }
 
-            $VMs = Get-VM | Where-Object { $_.PowerState -eq "PoweredOn" -and $_.Name -notmatch $VmExclusionRegex }
-            foreach ($vm in $VMs) {
-                $MasterTargetList.VMs += [PSCustomObject]@{ 
-                    Name             = $vm.Name
-                    vCenter          = $vCenterFQDN
-                    AdminUser        = $adminUser
-                    AdminPass        = $adminPass
-                    vCenterShortName = $vCenterShortName
-                    DateStr          = $DateStr
-                    ReportDir        = $VmReportDir
+                if ($getVm) {
+                    $VmReportDir = Join-Path $OverlayRoot "reports/$vCenterShortName/$DateStr/VMs"
+                    if ($null -eq $MasterTargetList.VMs) { $MasterTargetList.VMs = @() }
+
+                    $VMs = Get-VM | Where-Object { $_.PowerState -eq "PoweredOn" -and $_.Name -notmatch $VmExclusionRegex }
+                    foreach ($vm in $VMs) {
+                        $MasterTargetList.VMs += [PSCustomObject]@{ 
+                            Name             = $vm.Name
+                            vCenter          = $vCenterFQDN
+                            AdminUser        = $adminUser
+                            AdminPass        = $adminPass
+                            vCenterShortName = $vCenterShortName
+                            DateStr          = $DateStr
+                            ReportDir        = $VmReportDir
+                        }
+                    }
                 }
-            }
 
-            Disconnect-VIServer -Server $vCenterFQDN -Confirm:$false | Out-Null
-        } catch {
-            Write-Error "Failed to retrieve inventory from ${$vCenterFQDN}: $($_.Exception.Message)"
+                Disconnect-VIServer -Server $vCenterFQDN -Confirm:$false | Out-Null
+            } catch {
+                Write-StigLog -Message "Failed to retrieve ESXi/VM inventory from ${vCenterFQDN}: $($_.Exception.Message)" -Severity ERROR -Source "Inventory"
+            }
         }
     }
     
@@ -116,6 +140,9 @@ function Get-StigInventory {
 <#
 .SYNOPSIS
     Routes targets to their respective execution workers.
+.DESCRIPTION
+    Applies batch chunking to ESXi and VM arrays to optimize formatting performance 
+    and mitigate vCenter API throttling.
 #>
 function Invoke-StigAudit {
     [CmdletBinding()]
@@ -129,15 +156,55 @@ function Invoke-StigAudit {
     process {
         Write-Host "[*] Routing targets to execution workers..." -ForegroundColor Cyan
         
-        if ($TargetManifest.vCenters)  { $TargetManifest.vCenters  | Invoke-VcsaAudit -OverlayRoot $OverlayRoot }
-        if ($TargetManifest.ESXiHosts) { $TargetManifest.ESXiHosts | Invoke-EsxiAudit -OverlayRoot $OverlayRoot }
-        if ($TargetManifest.VMs)       { $TargetManifest.VMs       | Invoke-VmAudit   -OverlayRoot $OverlayRoot }
+        # VCSA runs sequentially but manages internal parallel services natively
+        if ($TargetManifest.vCenters) { 
+            $TargetManifest.vCenters | Invoke-VcsaAudit -OverlayRoot $OverlayRoot | Format-StigChecklist -OverlayRoot $OverlayRoot 
+        }
+
+        # ESXi processing in optimal batches
+        if ($TargetManifest.ESXiHosts) { 
+            $TotalESXi = $TargetManifest.ESXiHosts.Count
+            $BatchSize = 10 
+
+            Write-Host "[*] Discovered $TotalESXi ESXi hosts. Processing in batches of $BatchSize..." -ForegroundColor Cyan
+            
+            for ($i = 0; $i -lt $TotalESXi; $i += $BatchSize) {
+                $Batch = $TargetManifest.ESXiHosts | Select-Object -Skip $i -First $BatchSize
+                $BatchNumber = [math]::Floor($i / $BatchSize) + 1
+                $TotalBatches = [math]::Ceiling($TotalESXi / $BatchSize)
+                
+                Write-Host "`n[*] --- Processing ESXi Batch $BatchNumber of $TotalBatches ---" -ForegroundColor Yellow
+                
+                Invoke-EsxiAudit -TargetList $Batch -OverlayRoot $OverlayRoot | Format-StigChecklist -OverlayRoot $OverlayRoot
+            }
+        }
+
+        # VM processing in optimal batches
+        if ($TargetManifest.VMs) { 
+            $TotalVMs  = $TargetManifest.VMs.Count
+            $BatchSize = 40 
+
+            Write-Host "[*] Discovered $TotalVMs VMs. Processing in batches of $BatchSize..." -ForegroundColor Cyan
+            
+            for ($i = 0; $i -lt $TotalVMs; $i += $BatchSize) {
+                $Batch = $TargetManifest.VMs | Select-Object -Skip $i -First $BatchSize
+                $BatchNumber = [math]::Floor($i / $BatchSize) + 1
+                $TotalBatches = [math]::Ceiling($TotalVMs / $BatchSize)
+                
+                Write-Host "`n[*] --- Processing VM Batch $BatchNumber of $TotalBatches ---" -ForegroundColor Yellow
+                
+                Invoke-VmAudit -TargetList $Batch -OverlayRoot $OverlayRoot | Format-StigChecklist -OverlayRoot $OverlayRoot
+            }
+        }
     }
 }
 
 <#
 .SYNOPSIS
     Master formatting engine for all STIG Checklists.
+.DESCRIPTION
+    Collects audit results and formats them in parallel to eliminate 
+    the Node.js 'saf convert' execution bottleneck.
 #>
 function Format-StigChecklist {
     [CmdletBinding()]
@@ -149,6 +216,8 @@ function Format-StigChecklist {
     )
 
     begin {
+        $ResultsQueue = @()
+        
         $GlobalConfPath = Join-Path $OverlayRoot "conf/global_config.yml"
         if (-not (Test-Path $GlobalConfPath)) { Throw "Global configuration not found at $GlobalConfPath" }
         $GlobalConf = Get-Content $GlobalConfPath -Raw | ConvertFrom-Yaml
@@ -160,128 +229,143 @@ function Format-StigChecklist {
     }
 
     process {
-        $TargetName       = $AuditResult.TargetName
-        $TargetType       = $AuditResult.TargetType
-        $Component        = $AuditResult.DisaComponent
-        $vCenterShortName = $AuditResult.vCenterShortName
-        $DateStr          = $AuditResult.DateStr
-        
-        $TargetShortName  = ($TargetName -split '\.')[0].ToUpper()
+        $ResultsQueue += $AuditResult
+    }
 
-        $FolderType = switch ($TargetType) {
-            "VCSA" { "VCSA" }
-            "ESXi" { "ESXi" }
-            "VM"   { "VMs" }
+    end {
+        if ($ResultsQueue.Count -gt 0) {
+            Write-Host "[*] Initiating Parallel Formatting for $($ResultsQueue.Count) targets..." -ForegroundColor Cyan
         }
-        $OutputCklDir = Join-Path $OverlayRoot "reports/$vCenterShortName/$DateStr/$FolderType"
-        if (-not (Test-Path $OutputCklDir)) { New-Item -ItemType Directory -Path $OutputCklDir -Force | Out-Null }
 
-        $AnswersXmlPath = Join-Path $OverlayRoot "conf/$($TargetType.ToLower())/answers.xml"
+        $ResultsQueue | ForEach-Object -Parallel {
+            $AuditResult   = $_
+            $OverlayRoot   = $using:OverlayRoot
+            $TemplateDir   = $using:Script:TemplateDir
+            $GlobalMarking = $using:Script:GlobalMarking
+            
+            # Extract safe global functions to execute Update-CklTemplate in the isolated runspace
+            $GlobalFuncsPath = Join-Path $OverlayRoot "modules/globalFunctions.psm1"
+            $GlobalFuncsText = Get-Content $GlobalFuncsPath -Raw
+            $GlobalFuncsSafe = $GlobalFuncsText -replace "(?m)^Export-ModuleMember.*`$", ""
+            Invoke-Expression $GlobalFuncsSafe
 
-        Write-Host "[*] Formatting Checklist for: $TargetName ($Component)" -ForegroundColor Cyan
+            $TargetName       = $AuditResult.TargetName
+            $TargetType       = $AuditResult.TargetType
+            $Component        = $AuditResult.DisaComponent
+            $vCenterShortName = $AuditResult.vCenterShortName
+            $DateStr          = $AuditResult.DateStr
+            
+            $TargetShortName  = ($TargetName -split '\.')[0].ToUpper()
 
-        $PureDisaTemplatePath = Get-DisaTemplate -TemplateDir $Script:TemplateDir -ComponentType $Component
-        $TemplateBaseName = [System.IO.Path]::GetFileNameWithoutExtension($PureDisaTemplatePath)
+            $FolderType = switch ($TargetType) {
+                "VCSA" { "VCSA" }
+                "ESXi" { "ESXi" }
+                "VM"   { "VMs" }
+            }
+            $OutputCklDir = Join-Path $OverlayRoot "reports/$vCenterShortName/$DateStr/$FolderType"
+            if (-not (Test-Path $OutputCklDir)) { New-Item -ItemType Directory -Path $OutputCklDir -Force | Out-Null }
 
-        $FinalCkl = Join-Path $OutputCklDir "${TargetShortName}_${TemplateBaseName}_${DateStr}.ckl"
-        $TempBase = "/tmp/${TargetShortName}_${Component}"
+            $AnswersXmlPath = Join-Path $OverlayRoot "conf/$($TargetType.ToLower())/answers.xml"
+            $PureDisaTemplatePath = Get-DisaTemplate -TemplateDir $TemplateDir -ComponentType $Component
+            $TemplateBaseName = [System.IO.Path]::GetFileNameWithoutExtension($PureDisaTemplatePath)
 
-        if ($TargetType -eq "ESXi") {
-            $ApiTempCkl = "${TempBase}_API_temp.ckl"
-            $SshTempCkl = "${TempBase}_SSH_temp.ckl"
+            $FinalCkl = Join-Path $OutputCklDir "${TargetShortName}_${TemplateBaseName}_${DateStr}.ckl"
+            $TempBase = "/tmp/${TargetShortName}_${Component}"
 
-            Invoke-Expression "& bash -c 'saf convert hdf2ckl -i $($AuditResult.ApiJsonFile) -o $ApiTempCkl'" | Out-Null
-            Invoke-Expression "& bash -c 'saf convert hdf2ckl -i $($AuditResult.SshJsonFile) -o $SshTempCkl'" | Out-Null
+            if ($TargetType -eq "ESXi") {
+                $ApiTempCkl = "${TempBase}_API_temp.ckl"
+                $SshTempCkl = "${TempBase}_SSH_temp.ckl"
+                $MasterTempCkl = $null
 
-            if ((Test-Path $ApiTempCkl) -and (Test-Path $SshTempCkl)) {
-                Write-Verbose " -> Merging ESXi SSH results into API Checklist..."
-                $ApiXml = New-Object System.Xml.XmlDocument
-                $ApiXml.PreserveWhitespace = $true
-                $ApiXml.Load($ApiTempCkl)
+                if ($AuditResult.ApiJsonFile -and (Test-Path $AuditResult.ApiJsonFile)) {
+                    bash -c "saf convert hdf2ckl -i '$($AuditResult.ApiJsonFile)' -o '$ApiTempCkl'" | Out-Null
+                    if (Test-Path $ApiTempCkl) { $MasterTempCkl = $ApiTempCkl }
+                }
 
-                $SshXml = New-Object System.Xml.XmlDocument
-                $SshXml.Load($SshTempCkl)
+                if ($AuditResult.SshJsonFile -and (Test-Path $AuditResult.SshJsonFile)) {
+                    bash -c "saf convert hdf2ckl -i '$($AuditResult.SshJsonFile)' -o '$SshTempCkl'" | Out-Null
+                    
+                    if (Test-Path $SshTempCkl) {
+                        if ($MasterTempCkl) {
+                            $ApiXml = New-Object System.Xml.XmlDocument
+                            $ApiXml.PreserveWhitespace = $true
+                            $ApiXml.Load($ApiTempCkl)
+                            
+                            $SshXml = New-Object System.Xml.XmlDocument
+                            $SshXml.Load($SshTempCkl)
 
-                foreach ($sshVuln in $SshXml.CHECKLIST.STIGS.iSTIG.VULN) {
-                    $vulnNumNode = $sshVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Vuln_Num" }
-                    if ($vulnNumNode) {
-                        $vulnNum = $vulnNumNode.SelectSingleNode("ATTRIBUTE_DATA").InnerText
-                        $status  = $sshVuln.SelectSingleNode("STATUS").InnerText
-                        $details = $sshVuln.SelectSingleNode("FINDING_DETAILS").InnerXml
+                            foreach ($sshVuln in $SshXml.CHECKLIST.STIGS.iSTIG.VULN) {
+                                $vulnNumNode = $sshVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Vuln_Num" }
+                                if ($vulnNumNode) {
+                                    $vulnNum = $vulnNumNode.SelectSingleNode("ATTRIBUTE_DATA").InnerText
+                                    $xpath = "/CHECKLIST/STIGS/iSTIG/VULN[STIG_DATA/VULN_ATTRIBUTE='Vuln_Num' and STIG_DATA/ATTRIBUTE_DATA='$vulnNum']"
+                                    $apiVulnNode = $ApiXml.SelectSingleNode($xpath)
 
-                        $xpath = "/CHECKLIST/STIGS/iSTIG/VULN[STIG_DATA/VULN_ATTRIBUTE='Vuln_Num' and STIG_DATA/ATTRIBUTE_DATA='$vulnNum']"
-                        $apiVulnNode = $ApiXml.SelectSingleNode($xpath)
-
-                        if ($apiVulnNode) {
-                            $apiVulnNode.SelectSingleNode("STATUS").InnerText = $status
-                            $apiVulnNode.SelectSingleNode("FINDING_DETAILS").InnerXml = $details
+                                    if ($apiVulnNode) {
+                                        $apiVulnNode.SelectSingleNode("STATUS").InnerText = $sshVuln.SelectSingleNode("STATUS").InnerText
+                                        $apiVulnNode.SelectSingleNode("FINDING_DETAILS").InnerXml = $sshVuln.SelectSingleNode("FINDING_DETAILS").InnerXml
+                                    }
+                                }
+                            }
+                            $ApiXml.Save($ApiTempCkl)
+                        } else {
+                            $MasterTempCkl = $SshTempCkl
                         }
                     }
                 }
-                $ApiXml.Save($ApiTempCkl)
-                $MasterTempCkl = $ApiTempCkl
+
+                if (-not $MasterTempCkl) { 
+                    Write-StigLog -Message "Failed to generate Temp CKLs for ESXi merging on $TargetName" -Severity ERROR -Source "Formatter"
+                    return 
+                }
+            }
+            else {
+                $MasterTempCkl = "${TempBase}_temp.ckl"
+                bash -c "saf convert hdf2ckl -i '$($AuditResult.RawJsonFile)' -o '$MasterTempCkl'" | Out-Null
+            }
+
+            if (Test-Path $MasterTempCkl) {
+                $UpdateJob = [PSCustomObject]@{
+                    profileName      = $TargetName
+                    tempCklFile      = $MasterTempCkl
+                    pureTemplate     = $PureDisaTemplatePath
+                    cklFile          = $FinalCkl
+                    MARKING          = $GlobalMarking   
+                    answerFilePath   = $AnswersXmlPath
+                    
+                    vCenterShortName = $AuditResult.vCenterShortName
+                    TargetName       = $AuditResult.TargetName
+                    IPAddress        = $AuditResult.IPAddress
+                    MACAddress       = $AuditResult.MACAddress
+                    DNSName          = if ($AuditResult.DNSName) { $AuditResult.DNSName } else { "" }
+                    
+                    ESXiName         = $AuditResult.TargetName
+                    ESXiFQDN         = $AuditResult.TargetName
+                    ESXi_IP          = $AuditResult.IPAddress
+                    ESXi_MAC         = $AuditResult.MACAddress
+                }
+
+                try {
+                    Update-CklTemplate -UpdateJobs @($UpdateJob) -UpdateType $TargetType
+                    Write-Host " [+] Successfully formatted and saved: $FinalCkl" -ForegroundColor Green
+
+                    # Save raw evidence
+                    if ($AuditResult.RawJsonFile -and (Test-Path $AuditResult.RawJsonFile)) { Move-Item $AuditResult.RawJsonFile (Join-Path $OutputCklDir (Split-Path $AuditResult.RawJsonFile -Leaf)) -Force }
+                    if ($AuditResult.ApiJsonFile -and (Test-Path $AuditResult.ApiJsonFile)) { Move-Item $AuditResult.ApiJsonFile (Join-Path $OutputCklDir (Split-Path $AuditResult.ApiJsonFile -Leaf)) -Force }
+                    if ($AuditResult.SshJsonFile -and (Test-Path $AuditResult.SshJsonFile)) { Move-Item $AuditResult.SshJsonFile (Join-Path $OutputCklDir (Split-Path $AuditResult.SshJsonFile -Leaf)) -Force }
+                } catch {
+                    Write-StigLog -Message "Failed to apply final formatting for ${$TargetName}: $($_.Exception.Message)" -Severity ERROR -Source "Formatter"
+                }
+
+                # Cleanup Ephemeral Temp Files
+                $FilesToRemove = @( (Get-ChildItem "${TempBase}*.ckl" -ErrorAction SilentlyContinue).FullName )
+                foreach ($file in $FilesToRemove) {
+                    if ($file -and (Test-Path $file)) { Remove-Item $file -Force -ErrorAction SilentlyContinue }
+                }
             } else {
-                Write-Error "Failed to generate Temp CKLs for ESXi merging on $TargetName"
-                return
+                Write-StigLog -Message "SAF CLI failed to generate Master Temp CKL for $TargetName" -Severity ERROR -Source "Formatter"
             }
-        }
-        else {
-            $MasterTempCkl = "${TempBase}_temp.ckl"
-            Invoke-Expression "& bash -c 'saf convert hdf2ckl -i $($AuditResult.RawJsonFile) -o $MasterTempCkl'" | Out-Null
-        }
-
-        if (Test-Path $MasterTempCkl) {
-            $UpdateJob = [PSCustomObject]@{
-                profileName      = $TargetName
-                tempCklFile      = $MasterTempCkl
-                pureTemplate     = $PureDisaTemplatePath
-                cklFile          = $FinalCkl
-                MARKING          = $Script:GlobalMarking   
-                answerFilePath   = $AnswersXmlPath
-                
-                # VCSA ASSET DATA
-                vCenterShortName = $AuditResult.vCenterShortName
-                TargetName       = $AuditResult.TargetName
-                IPAddress        = $AuditResult.IPAddress
-                MACAddress       = $AuditResult.MACAddress
-                
-                # ESXi ASSET DATE
-                ESXiName         = $AuditResult.TargetName
-                ESXiFQDN         = $AuditResult.TargetName
-                ESXi_IP          = $AuditResult.IPAddress
-                ESXi_MAC         = $AuditResult.MACAddress
-            }
-
-            try {
-                Update-CklTemplate -UpdateJobs @($UpdateJob) -UpdateType $TargetType
-                Write-Host "[+] Successfully formatted and saved: $FinalCkl" -ForegroundColor Green
-
-                if ($AuditResult.RawJsonFile -and (Test-Path $AuditResult.RawJsonFile)) {
-                    $DestJson = Join-Path $OutputCklDir (Split-Path $AuditResult.RawJsonFile -Leaf)
-                    Move-Item $AuditResult.RawJsonFile $DestJson -Force
-                    Write-Host "[+] Saved Raw JSON to: $DestJson" -ForegroundColor DarkGray
-                }
-            } catch {
-                Write-Error "Failed to apply final formatting for $TargetName : $($_.Exception.Message)"
-            }
-
-            # --- Cleanup Ephemeral Temp and Raw JSON Files ---
-            $FilesToRemove = @( (Get-ChildItem "${TempBase}*.ckl" -ErrorAction SilentlyContinue).FullName )
-            
-            if ($AuditResult.RawJsonFile) { $FilesToRemove += $AuditResult.RawJsonFile }
-            if ($AuditResult.ApiJsonFile) { $FilesToRemove += $AuditResult.ApiJsonFile }
-            if ($AuditResult.SshJsonFile) { $FilesToRemove += $AuditResult.SshJsonFile }
-
-            foreach ($file in $FilesToRemove) {
-                if ($file -and (Test-Path $file)) {
-                    try { Remove-Item $file -Force -ErrorAction Stop } 
-                    catch { Write-StigLog -Message "Cleanup Warning: Failed to remove file $file" -Severity WARN -Source "Formatter" }
-                }
-            }
-
-        } else {
-            Write-Error "SAF CLI failed to generate Master Temp CKL for $TargetName"
-        }
+        } -ThrottleLimit 15
     }
 }
 

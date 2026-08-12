@@ -1,7 +1,7 @@
 # =========================================================================
 # MODULE: globalFunctions.psm1
-# DESCRIPTION: Core utility library containing only the required functions
-# for enterprise logging, XML manipulation, and STIG formatting.
+# DESCRIPTION: Core utility library containing only the universally required 
+# functions for enterprise logging, XML manipulation, and STIG formatting.
 # =========================================================================
 
 # =========================================================================
@@ -11,10 +11,6 @@
 <#
 .SYNOPSIS
     Initializes dual-channel logging (Structured App Log + Raw Transcript).
-.DESCRIPTION
-    Establishes the global logging state for the orchestration run. It generates a 
-    clean, SIEM-ingestible fixed-width log file alongside a native PowerShell 
-    transcript for deep runtime debugging.
 #>
 function Initialize-StigLogging {
     [CmdletBinding()]
@@ -31,18 +27,13 @@ function Initialize-StigLogging {
     $global:StigAppLog     = Join-Path $LogDirectory "StigOrchestrator_$((Get-Date).ToString('yyyyMMdd')).log"
     $TranscriptPath        = Join-Path $LogDirectory "Session_Transcript_$((Get-Date).ToString('yyyyMMdd_HHmmss')).txt"
     
-    # Captures unhandled PowerShell errors and verbose streams
     Start-Transcript -Path $TranscriptPath -Append -Force | Out-Null
-    
     Write-StigLog -Message "Pipeline Logging Initialized. Silent Mode: $($global:StigSilentMode)" -Severity INFO -Source "System"
 }
 
 <#
 .SYNOPSIS
     Writes structured, fixed-width log entries to file and console.
-.DESCRIPTION
-    Standardizes log output formats for SIEM ingestion. Uses fixed padding for 
-    Severity and Source columns to ensure perfect alignment in aggregators.
 #>
 function Write-StigLog {
     [CmdletBinding()]
@@ -52,13 +43,10 @@ function Write-StigLog {
         [string]$Source = 'Orchestrator'
     )
     
-    # Enforces ISO 8601 timestamp standard for accurate log aggregation
     $Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     $LogEntry  = "[$Timestamp] [$($Severity.PadRight(7))] [$($Source.PadRight(15))] $Message"
 
-    if ($global:StigAppLog) { 
-        Add-Content -Path $global:StigAppLog -Value $LogEntry 
-    }
+    if ($global:StigAppLog) { Add-Content -Path $global:StigAppLog -Value $LogEntry }
 
     if (-not $global:StigSilentMode) {
         switch ($Severity) {
@@ -98,9 +86,6 @@ function Write-ElapsedTime {
 <#
 .SYNOPSIS
     Dynamically resolves Pure DISA CKL templates by component.
-.DESCRIPTION
-    Uses Regex pattern matching to locate the correct target template regardless 
-    of the appended DISA V#R# string, eliminating hardcoded version dependencies.
 #>
 function Get-DisaTemplate {
     [CmdletBinding()]
@@ -126,10 +111,7 @@ function Get-DisaTemplate {
 <#
 .SYNOPSIS
     Parses answers.xml to inject statuses, justifications, and waivers.
-.DESCRIPTION
-    Validates the InSpec finding against localized waivers. Automatically handles 
-    expired review dates by degrading the status to 'Not_Reviewed' to enforce 
-    continuous monitoring standards.
+    Includes guard clauses for empty XML files.
 #>
 function Get-FormattedAnswer {
     [CmdletBinding()]
@@ -144,15 +126,24 @@ function Get-FormattedAnswer {
     $result = @{ Comments = ""; Status = "" }
     
     try {
-        # Thread-safe caching mechanism to prevent parallel collisions
         if (-not $script:AnswerXmlCache) { $script:AnswerXmlCache = @{} }
 
         if ($script:AnswerXmlCache.ContainsKey($AnswerFile)) {
             $answerXmlData = $script:AnswerXmlCache[$AnswerFile]
         } else {
-            [xml]$answerXmlData = [System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::UTF8.GetBytes((Get-Content -Path $AnswerFile -Raw)))
+            $rawContent = Get-Content -Path $AnswerFile -Raw
+            
+            if ([string]::IsNullOrWhiteSpace($rawContent)) {
+                $script:AnswerXmlCache[$AnswerFile] = $null
+                return $null
+            }
+
+            [xml]$answerXmlData = [System.Text.Encoding]::UTF8.GetString([System.Text.Encoding]::UTF8.GetBytes($rawContent))
             $script:AnswerXmlCache[$AnswerFile] = $answerXmlData
         }
+
+        $answerXmlData = $script:AnswerXmlCache[$AnswerFile]
+        if ($null -eq $answerXmlData) { return $null }
 
         $answerEntry = $answerXmlData.SelectSingleNode("//STIG[@ID='$vulnRuleVer']")
         if (-not $answerEntry) { return $null }
@@ -164,13 +155,11 @@ function Get-FormattedAnswer {
 
         $expectedStatus = $answerObj.ExpectedStatus.Trim()
         
-        # Abort override if the raw status doesn't match the expected entry criteria
         if ($expectedStatus -ne $CurrentStatus) {
             $result.Status = $CurrentStatus
             return $result
         }
 
-        # Calculate expiration based on frequency thresholds
         $reviewMeta       = ""
         $reviewedDateNode = $answerObj.SelectSingleNode("Reviewed")
         $frequencyNode    = $answerObj.SelectSingleNode("Frequency")
@@ -192,7 +181,6 @@ function Get-FormattedAnswer {
         $validTrueComment  = if ($answerObj.ValidTrueComment)  { $answerObj.ValidTrueComment.InnerXml.Trim() }  else { "" }
         $validFalseComment = if ($answerObj.ValidFalseComment) { $answerObj.ValidFalseComment.InnerXml.Trim() } else { "" }
 
-        # Process Validation Codes to dynamically shift statuses based on textual output
         $combinedText   = "$FindingDetailsText $CurrentStatus"
         $validationCode = $answerObj.ValidationCode.Trim()
         $isValid        = $true
@@ -222,7 +210,6 @@ function Get-FormattedAnswer {
 
         $commentBody += $reviewMeta
         
-        # Enforce degradation to Not_Reviewed if the manual verification has expired
         if ($reviewMeta -match "Expired") { $newStatus = "Not_Reviewed" }
 
         $timestamp  = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
@@ -234,7 +221,6 @@ function Get-FormattedAnswer {
 
         $finalComment = $preComment + $commentBody
         
-        # Hard truncate to prevent STIG Manager API injection failures caused by oversized payload strings
         if (($finalComment | Measure-Object -Character).Characters -gt 32667) {
             $finalComment = $finalComment.Substring(0, [System.Math]::Min(32617, $finalComment.Length)) + "`r`n---truncated: exceeded character limit---"
         }
@@ -263,7 +249,6 @@ function Format-FindingDetail {
     
     $currentDate = Get-Date -Format "MM/dd/yyyy"
     
-    # Establish standard headers for clarity in the STIG Manager UI
     switch ($Status) {
         "Open"           { $header = "Inspec Profile: $ModuleName found this to be OPEN on $($currentDate):`r`n---------------------------------------------------------------`r`n`r`n" }
         "NotAFinding"    { $header = "Inspec Profile: $ModuleName found this to be NOT A FINDING on $($currentDate):`r`n------------------------------------------------------------------------`r`n`r`n" }
@@ -280,8 +265,8 @@ function Format-FindingDetail {
     Merges SAF-converted XML data into a pristine DISA template.
 .DESCRIPTION
     Safely extracts status, comments, and finding details from a temporary SAF-generated
-    CKL file and injects them into a pristine DISA CKL template. This ensures full 
-    schema compliance with STIG Manager and eMASS.
+    CKL file and injects them into a pristine DISA CKL template. Ensures strict mapping 
+    of asset properties based on the TargetType (VCSA, ESXi, VM).
 #>
 function Update-CklTemplate {
     [CmdletBinding()]
@@ -295,8 +280,6 @@ function Update-CklTemplate {
         $TempCklPath  = $Job.tempCklFile
         $FinalCklPath = $Job.cklFile
         $PureTemplate = $Job.pureTemplate
-        
-        Write-StigLog -Message "Injecting Answers and Formatting CKL into: $ProfileName..." -Severity INFO -Source "Formatter"
         
         # 1. Safely Load XML Documents
         try {
@@ -318,7 +301,6 @@ function Update-CklTemplate {
         $stigidValue = if ($null -ne $stigidNode) { $stigidNode.InnerText } else { $ProfileName }
         
         # 3. Overlay Asset Identifiers
-        # [FIX]: Stop pulling from $workingXml as SAF strips these. Pull directly from $Job properties.
         $templateXml.CHECKLIST.ASSET.ROLE            = "Member Server"
         $templateXml.CHECKLIST.ASSET.MARKING         = $Job.MARKING
         $templateXml.CHECKLIST.ASSET.ASSET_TYPE      = "Computing"
@@ -330,7 +312,14 @@ function Update-CklTemplate {
             $templateXml.CHECKLIST.ASSET.HOST_IP   = $Job.ESXi_IP
             $templateXml.CHECKLIST.ASSET.HOST_MAC  = $Job.ESXi_MAC
             $templateXml.CHECKLIST.ASSET.HOST_FQDN = $Job.ESXiFQDN
-        } else {
+        } 
+        elseif ($UpdateType -eq "VM") {
+            $templateXml.CHECKLIST.ASSET.HOST_NAME = $Job.TargetName.ToUpper()
+            $templateXml.CHECKLIST.ASSET.HOST_IP   = $Job.IPAddress
+            $templateXml.CHECKLIST.ASSET.HOST_MAC  = $Job.MACAddress
+            $templateXml.CHECKLIST.ASSET.HOST_FQDN = if ($Job.DNSName) { $Job.DNSName } else { $Job.TargetName }
+        }
+        else {
             # Defaults to VCSA/vCenter properties
             $templateXml.CHECKLIST.ASSET.HOST_NAME = $Job.vCenterShortName
             $templateXml.CHECKLIST.ASSET.HOST_IP   = $Job.IPAddress
@@ -351,7 +340,6 @@ function Update-CklTemplate {
                 $vulnFindDet  = $vuln.SelectSingleNode("FINDING_DETAILS").InnerXml
                 $vulnCOMMENTS = $vuln.SelectSingleNode("COMMENTS").InnerXml
 
-             # Call Get-FormattedAnswer to inject statuses, comments, and waivers from answers.xml
                 if (Test-Path $Job.answerFilePath) {
                     $answerData = Get-FormattedAnswer -AnswerFile $Job.answerFilePath -vulnRuleVer $vulnRuleVer -CurrentStatus $vulnSTATUS -FindingDetailsText $vulnFindDet -AnswerKey "DEFAULT"
                     
