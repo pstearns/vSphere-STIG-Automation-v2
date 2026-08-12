@@ -317,15 +317,26 @@ function Update-CklTemplate {
         $stigidNode  = $templateXml.SelectSingleNode("//SI_DATA[SID_NAME='stigid']/SID_DATA")
         $stigidValue = if ($null -ne $stigidNode) { $stigidNode.InnerText } else { $ProfileName }
         
-        # 3. Overlay Asset Identifiers 
-        $templateXml.CHECKLIST.ASSET.ROLE            = $workingXml.CHECKLIST.ASSET.ROLE
+        # 3. Overlay Asset Identifiers
+        # [FIX]: Stop pulling from $workingXml as SAF strips these. Pull directly from $Job properties.
+        $templateXml.CHECKLIST.ASSET.ROLE            = "Member Server"
         $templateXml.CHECKLIST.ASSET.MARKING         = $Job.MARKING
-        $templateXml.CHECKLIST.ASSET.ASSET_TYPE      = $workingXml.CHECKLIST.ASSET.ASSET_TYPE
-        $templateXml.CHECKLIST.ASSET.HOST_NAME       = $workingXml.CHECKLIST.ASSET.HOST_NAME
-        $templateXml.CHECKLIST.ASSET.HOST_IP         = $workingXml.CHECKLIST.ASSET.HOST_IP
-        $templateXml.CHECKLIST.ASSET.HOST_MAC        = $workingXml.CHECKLIST.ASSET.HOST_MAC
-        $templateXml.CHECKLIST.ASSET.HOST_FQDN       = $workingXml.CHECKLIST.ASSET.HOST_FQDN
-        $templateXml.CHECKLIST.ASSET.WEB_OR_DATABASE = $workingXml.CHECKLIST.ASSET.WEB_OR_DATABASE
+        $templateXml.CHECKLIST.ASSET.ASSET_TYPE      = "Computing"
+        $templateXml.CHECKLIST.ASSET.WEB_OR_DATABASE = "false"
+        
+        # Dynamically assign host properties based on the target type
+        if ($UpdateType -eq "ESXi") {
+            $templateXml.CHECKLIST.ASSET.HOST_NAME = $Job.ESXiName
+            $templateXml.CHECKLIST.ASSET.HOST_IP   = $Job.ESXi_IP
+            $templateXml.CHECKLIST.ASSET.HOST_MAC  = $Job.ESXi_MAC
+            $templateXml.CHECKLIST.ASSET.HOST_FQDN = $Job.ESXiFQDN
+        } else {
+            # Defaults to VCSA/vCenter properties
+            $templateXml.CHECKLIST.ASSET.HOST_NAME = $Job.vCenterShortName
+            $templateXml.CHECKLIST.ASSET.HOST_IP   = $Job.IPAddress
+            $templateXml.CHECKLIST.ASSET.HOST_MAC  = $Job.MACAddress
+            $templateXml.CHECKLIST.ASSET.HOST_FQDN = $Job.TargetName
+        }
 
         # 4. Iterate Vulnerabilities with Strict Null-Checking
         try {
@@ -339,6 +350,16 @@ function Update-CklTemplate {
                 $vulnSTATUS   = $vuln.SelectSingleNode("STATUS").InnerText
                 $vulnFindDet  = $vuln.SelectSingleNode("FINDING_DETAILS").InnerXml
                 $vulnCOMMENTS = $vuln.SelectSingleNode("COMMENTS").InnerXml
+
+             # Call Get-FormattedAnswer to inject statuses, comments, and waivers from answers.xml
+                if (Test-Path $Job.answerFilePath) {
+                    $answerData = Get-FormattedAnswer -AnswerFile $Job.answerFilePath -vulnRuleVer $vulnRuleVer -CurrentStatus $vulnSTATUS -FindingDetailsText $vulnFindDet -AnswerKey "DEFAULT"
+                    
+                    if ($null -ne $answerData -and $answerData.Status -ne "") {
+                        $vulnSTATUS   = $answerData.Status
+                        $vulnCOMMENTS = $answerData.Comments
+                    }
+                }
 
                 $formattedAnswer = Format-FindingDetail -Status $vulnSTATUS -FindingDetails $vulnFindDet -ModuleName $stigidValue
 
@@ -370,4 +391,4 @@ function Update-CklTemplate {
     }
 }
 
-Export-ModuleMember -Function Initialize-StigLogging, Write-StigLog, Write-ElapsedTime, Get-DisaTemplate, Get-FormattedAnswer, Format-FindingDetail, Update-CklTemplate
+Export-ModuleMember -Function Initialize-StigLogging, Write-StigLog, Write-ElapsedTime, Get-DisaTemplate

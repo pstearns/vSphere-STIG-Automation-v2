@@ -21,7 +21,7 @@ This file contains answers for known opens and findings that cannot be evaluated
   <STIG ID="VCSA-80-000080">
     <!--The system must establish the validity of the user-supplied identity certificate using Online Certificate Status Protocol (OCSP) and/or Certificate Revocation List (CRL) revocation checking.-->
     <AnswerKey Name="DEFAULT">
-      <ExpectedStatus>NotAFinding</ExpectedStatus>
+      <ExpectedStatus>Open</ExpectedStatus>
       <ValidationCode></ValidationCode>
       <ValidTrueStatus>Not_Applicable</ValidTrueStatus>
       <ValidTrueComment xml:space="preserve">
@@ -31,7 +31,7 @@ CyberARK PAM is implemented as the direct user-authentication intermediary, acco
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>1y</Frequency>
     </AnswerKey>
   </STIG>
@@ -48,7 +48,7 @@ CyberARK PAM is implemented as the direct user-authentication intermediary, acco
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>1y</Frequency>
     </AnswerKey>
   </STIG>
@@ -65,7 +65,7 @@ CyberARK PAM is implemented as the direct user-authentication intermediary, acco
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>1y</Frequency>
     </AnswerKey>
   </STIG>
@@ -82,8 +82,7 @@ Verified all groups have appropriate permissions according to the following SSPs
 vCenter SSP Section 9.3
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
-      <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>1y</Frequency>
     </AnswerKey>
   </STIG>
@@ -98,7 +97,7 @@ There are no AO-defined events, this is not a finding.
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>1y</Frequency>
     </AnswerKey>
   </STIG>
@@ -115,7 +114,7 @@ vCenter SSP Section 9.3
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>1y</Frequency>
     </AnswerKey>
   </STIG>
@@ -138,7 +137,7 @@ vCenter SSP Section 9.3.2
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>1y</Frequency>
     </AnswerKey>
   </STIG>
@@ -155,7 +154,7 @@ that are logically separated from other traffic types.
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -171,7 +170,7 @@ Manually verified Login Banner is formatted in accordance with DTM-08-06.
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -186,7 +185,7 @@ Manually verified no unauthorized plugins are installed.
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -201,7 +200,7 @@ Manually verified appropriate LDAPs servers are configured.
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -216,7 +215,7 @@ Needs Fixed
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -231,7 +230,7 @@ Manually verified Program Status: Not Joined.
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -247,7 +246,7 @@ set to "SHA1", Privacy is set to "AES128".
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -262,7 +261,7 @@ Manually verified distributed switches are not used, this is not applicable.
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -278,7 +277,7 @@ and any patches must be manually validated and imported as needed.
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -294,7 +293,7 @@ service account dedicated to that application.
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -309,7 +308,7 @@ Needs Fixed
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -324,7 +323,7 @@ Manually verified vSAN is not in use, this is not applicable..
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -339,7 +338,7 @@ Manually verified appropriate LDAPs servers are configured.
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -354,7 +353,7 @@ Manually verified backups exist for the Native Key Provider and they are passwor
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>
       <ValidFalseComment></ValidFalseComment>
-      <Reviewed>2025-05-15</Reviewed>
+      <Reviewed>2026-08-11</Reviewed>
       <Frequency>6m</Frequency>
     </AnswerKey>
   </STIG>
@@ -362,14 +361,14 @@ Manually verified backups exist for the Native Key Provider and they are passwor
   <STIG ID="VCSA-80-000298">
     <!--The vCenter Server must separate authentication and authorization for administrators.-->
     <AnswerKey Name="DEFAULT">
-      <ExpectedStatus>Open</ExpectedStatus>
+      <ExpectedStatus>Not_Reviewed</ExpectedStatus>
       <ValidationCode></ValidationCode>
       <ValidTrueStatus>Open</ValidTrueStatus>
       <ValidTrueComment xml:space="preserve">
 The following check is more complicated in vSphere 8 and will take some time to unravel on existing vCenters. 
 Do to time this check will be open until we can recreate all permissions with SSO. 
 
-Verified open. 
+Verified open 2026-08-11. 
 Working on updating the permission to the vSphere 8 SSO standard. This is mitigated by using AD Groups until the SSO Groups can be created.
       </ValidTrueComment>      
       <ValidFalseStatus></ValidFalseStatus>

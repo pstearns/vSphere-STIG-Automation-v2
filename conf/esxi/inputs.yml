@@ -1,0 +1,36 @@
+# ESXi Varibles
+# ==================================================================
+classification: "U"
+MARKING: "CUI"
+esxiNtpServers: 
+  - "139.231.126.100"
+  - "139.231.126.14"
+  - "139.231.1.11"
+syslogServer: 'udp://n-lem:514'
+esxAdminsGroup: "G6 VI Admins"
+allowedIPs: 
+  - "139.231.0.0/16"
+  - "172.16.0.0/16"
+  - "192.168.0.0/16"
+esxiVer: '24784735'
+ExceptionUsers: 
+  - 'NIPRPNP\svc.acas.sa'
+  - 'root'
+domainName: 'niprpnp.army.mil'
+CanonicalOU: 'niprpnp.army.mil/USAICOE Enterprise/Infrastructure Resources/Appliances'
+OU: 'OU=Appliances,OU=Infrastructure Resources,OU=USAICOE Enterprise,DC=niprpnp,DC=army,DC=mil'
+vMotionVlanId: 
+  - '1920'
+  - '920'
+  - '192'
+  - '1921'
+vsanVlanId: '10'
+mgtVlanId: "unset"    # Checking the vlan isn't necessary to the finding statements.
+sslIssueOrg: 
+  - 'U.S. Government'
+  - 'CIOG6'
+  - 'USArmy'
+  - 'G6'
+nativeVLAN: "1"
+Scratch: '[syslog] '
+snmpEnabled: 'false'

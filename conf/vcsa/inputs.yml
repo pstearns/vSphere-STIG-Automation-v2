@@ -7,6 +7,7 @@ syslogServers:
   - "udp://n-lem:514"
   - "139.231.126.50"
   - "139.231.126.56"
+  - "huafellog2.niprpnp.army.mil"
 ntpServers:
   - "139.231.126.100"
   - "139.231.126.14"
@@ -17,5 +18,5 @@ sslIssueOrg:
   - "CIOG6"
   - "USArmy"
   - "G6"
-backup3rdParty: "false"
-embeddedIdp: "true"
+backup3rdParty: false
+embeddedIdp: true
