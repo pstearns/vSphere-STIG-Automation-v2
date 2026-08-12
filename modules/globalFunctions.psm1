@@ -391,4 +391,4 @@ function Update-CklTemplate {
     }
 }
 
-Export-ModuleMember -Function Initialize-StigLogging, Write-StigLog, Write-ElapsedTime, Get-DisaTemplate
+Export-ModuleMember -Function Initialize-StigLogging, Write-StigLog, Write-ElapsedTime, Get-DisaTemplate, Get-FormattedAnswer, Format-FindingDetail, Update-CklTemplate
