@@ -18,7 +18,7 @@ function Invoke-VcsaAudit {
     process {
         Write-Host "[*] Initiating VCSA audit for target: $($Target.FQDN)" -ForegroundColor Cyan
         
-        $RawJsonDir = $Target.ReportDir
+        $RawJsonDir = "/tmp/stig_staging/$($Target.FQDN)"
         if (-not (Test-Path $RawJsonDir)) { New-Item -ItemType Directory -Path $RawJsonDir -Force | Out-Null }
 
         $NetInfo = Get-VCSANetworkInfo -FQDN $Target.FQDN -Username $Target.AdminUser -Password $Target.AdminPass

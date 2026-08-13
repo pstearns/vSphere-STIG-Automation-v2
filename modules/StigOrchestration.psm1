@@ -34,7 +34,6 @@ function Get-StigInventory {
     [CmdletBinding()]
     param (
         [string]$OverlayRoot = $Script:OverlayRoot,
-        [string]$VmExclusionRegex = "^vCLS|NSX|vCenter|Appliance.*",
         [ValidateSet('All', 'VCSA', 'ESXi', 'VM')]
         [string[]]$TargetType = @('All')
     )
@@ -44,6 +43,12 @@ function Get-StigInventory {
 
     $credentials = Get-vCenterCredentialStore -FilePath $CredentialFile
     if (-not $credentials.vCenters) { Throw "No vCenters found in the credential vault." }
+
+        $GlobalConfPath = Join-Path $OverlayRoot "conf/global_config.yml"
+    if (-not (Test-Path $GlobalConfPath)) { Throw "Global configuration not found at $GlobalConfPath" }
+    $GlobalConf = Get-Content $GlobalConfPath -Raw | ConvertFrom-Yaml
+    
+    $VmExclusionRegex = if ($GlobalConf.vm_exclusion_regex) { $GlobalConf.vm_exclusion_regex } else { "^vCLS|NSX|vCenter|Appliance.*" }
 
     $MasterTargetList = [PSCustomObject]@{
         vCenters  = $null
@@ -70,7 +75,7 @@ function Get-StigInventory {
         $esxiRoot  = $credObj.EsxiCred.GetNetworkCredential().Password
 
         if ($getVcsa) {
-            $VcsaReportDir = Join-Path $OverlayRoot "reports/$vCenterShortName/$DateStr/VCSA"
+            $VcsaReportDir = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/VCSA"
             if ($null -eq $MasterTargetList.vCenters) { $MasterTargetList.vCenters = @() }
             
             $MasterTargetList.vCenters += [PSCustomObject]@{
@@ -91,7 +96,7 @@ function Get-StigInventory {
                 Connect-VIServer -Server $vCenterFQDN -User $adminUser -Password $adminPass -Force -ErrorAction Stop | Out-Null
                 
                 if ($getEsxi) {
-                    $EsxiReportDir = Join-Path $OverlayRoot "reports/$vCenterShortName/$DateStr/ESXi"
+                    $EsxiReportDir = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/ESXi"
                     if ($null -eq $MasterTargetList.ESXiHosts) { $MasterTargetList.ESXiHosts = @() }
                     
                     $Hosts = Get-VMHost
@@ -110,7 +115,7 @@ function Get-StigInventory {
                 }
 
                 if ($getVm) {
-                    $VmReportDir = Join-Path $OverlayRoot "reports/$vCenterShortName/$DateStr/VMs"
+                    $VmReportDir = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/VMs"
                     if ($null -eq $MasterTargetList.VMs) { $MasterTargetList.VMs = @() }
 
                     $VMs = Get-VM | Where-Object { $_.PowerState -eq "PoweredOn" -and $_.Name -notmatch $VmExclusionRegex }
@@ -262,7 +267,7 @@ function Format-StigChecklist {
                 "ESXi" { "ESXi" }
                 "VM"   { "VMs" }
             }
-            $OutputCklDir = Join-Path $OverlayRoot "reports/$vCenterShortName/$DateStr/$FolderType"
+            $OutputCklDir = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/$FolderType"
             if (-not (Test-Path $OutputCklDir)) { New-Item -ItemType Directory -Path $OutputCklDir -Force | Out-Null }
 
             $AnswersXmlPath = Join-Path $OverlayRoot "conf/$($TargetType.ToLower())/answers.xml"
@@ -270,7 +275,9 @@ function Format-StigChecklist {
             $TemplateBaseName = [System.IO.Path]::GetFileNameWithoutExtension($PureDisaTemplatePath)
 
             $FinalCkl = Join-Path $OutputCklDir "${TargetShortName}_${TemplateBaseName}_${DateStr}.ckl"
-            $TempBase = "/tmp/${TargetShortName}_${Component}"
+            $StagingDir = "/tmp/stig_staging/$($TargetName)"
+            $TempBase = "$StagingDir/${TargetShortName}_${Component}"
+
 
             if ($TargetType -eq "ESXi") {
                 $ApiTempCkl = "${TempBase}_API_temp.ckl"
@@ -349,21 +356,21 @@ function Format-StigChecklist {
                     Update-CklTemplate -UpdateJobs @($UpdateJob) -UpdateType $TargetType
                     Write-Host " [+] Successfully formatted and saved: $FinalCkl" -ForegroundColor Green
 
-                    # Save raw evidence
-                    if ($AuditResult.RawJsonFile -and (Test-Path $AuditResult.RawJsonFile)) { Move-Item $AuditResult.RawJsonFile (Join-Path $OutputCklDir (Split-Path $AuditResult.RawJsonFile -Leaf)) -Force }
-                    if ($AuditResult.ApiJsonFile -and (Test-Path $AuditResult.ApiJsonFile)) { Move-Item $AuditResult.ApiJsonFile (Join-Path $OutputCklDir (Split-Path $AuditResult.ApiJsonFile -Leaf)) -Force }
-                    if ($AuditResult.SshJsonFile -and (Test-Path $AuditResult.SshJsonFile)) { Move-Item $AuditResult.SshJsonFile (Join-Path $OutputCklDir (Split-Path $AuditResult.SshJsonFile -Leaf)) -Force }
+                    if ($AuditResult.RawJsonFile -and (Test-Path $AuditResult.RawJsonFile)) { Remove-Item -Path $AuditResult.RawJsonFile -Force -ErrorAction SilentlyContinue }
+                    if ($AuditResult.ApiJsonFile -and (Test-Path $AuditResult.ApiJsonFile)) { Remove-Item -Path $AuditResult.ApiJsonFile -Force -ErrorAction SilentlyContinue }
+                    if ($AuditResult.SshJsonFile -and (Test-Path $AuditResult.SshJsonFile)) { Remove-Item -Path $AuditResult.SshJsonFile -Force -ErrorAction SilentlyContinue }
+
                 } catch {
-                    Write-StigLog -Message "Failed to apply final formatting for ${$TargetName}: $($_.Exception.Message)" -Severity ERROR -Source "Formatter"
+                    Write-StigLog -Message "Failed to apply final formatting for ${TargetName}: $($_.Exception.Message)" -Severity ERROR -Source "Formatter"
                 }
 
-                # Cleanup Ephemeral Temp Files
+                # Cleanup only THIS component's Temp CKLs
                 $FilesToRemove = @( (Get-ChildItem "${TempBase}*.ckl" -ErrorAction SilentlyContinue).FullName )
                 foreach ($file in $FilesToRemove) {
                     if ($file -and (Test-Path $file)) { Remove-Item $file -Force -ErrorAction SilentlyContinue }
                 }
             } else {
-                Write-StigLog -Message "SAF CLI failed to generate Master Temp CKL for $TargetName" -Severity ERROR -Source "Formatter"
+                Write-StigLog -Message "SAF CLI failed to generate Master Temp CKL for ${$TargetName}" -Severity ERROR -Source "Formatter"
             }
         } -ThrottleLimit 15
     }

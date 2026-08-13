@@ -25,7 +25,7 @@ function Invoke-VmAudit {
 
         Write-Host " -> [$($Target.Name)] Executing VM API Audit via vCenter..." -ForegroundColor DarkGray
         
-        $RawJsonDir = $Target.ReportDir
+        $RawJsonDir = "/tmp/stig_staging/$($Target.Name)"
         if (-not (Test-Path $RawJsonDir)) { New-Item -ItemType Directory -Path $RawJsonDir -Force | Out-Null }
 
         $InputsFile = Join-Path $OverlayRoot "conf/vm/inputs.yml"

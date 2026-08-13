@@ -30,7 +30,7 @@ function Invoke-EsxiAudit {
         Write-Host " -> [$($Target.Name)] Executing ESXi Audit phases..." -ForegroundColor DarkGray
         
         # Directory structure initialization
-        $RawJsonDir = $Target.ReportDir
+        $RawJsonDir = "/tmp/stig_staging/$($Target.Name)"
         if (-not (Test-Path $RawJsonDir)) { New-Item -ItemType Directory -Path $RawJsonDir -Force | Out-Null }
 
         $InputsFile = Join-Path $OverlayRoot "conf/esxi/inputs.yml"
