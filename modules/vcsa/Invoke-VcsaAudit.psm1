@@ -31,6 +31,13 @@ function Invoke-VcsaAudit {
         $InputsFile = Join-Path $OverlayRoot "conf/vcsa/inputs.yml"
         if (-not (Test-Path $InputsFile)) { Throw "CRITICAL: Custom inputs.yml not found." }
 
+        # --- Define Custom Profile Paths ---
+        $CustomApiProfilePath = Join-Path $OverlayRoot "custom_profiles/vcsa/inspec/api"
+        $CustomSshProfilePath = Join-Path $OverlayRoot "custom_profiles/vcsa/inspec/ssh"
+        
+        $CustomApiRawOut = Join-Path $RawJsonDir "$($Target.FQDN)_VCSA_CUSTOM_API_raw.json"
+        $CustomSshRawOut = Join-Path $RawJsonDir "$($Target.FQDN)_VCSA_CUSTOM_SSH_raw.json"
+
         $VcsaComponents = @(
             @{ Component = "vCenter";         Transport = "vmware"; ProfileFolder = "vcenter" },
             @{ Component = "VCSA_EAM";        Transport = "ssh";    ProfileFolder = "eam" },
@@ -51,14 +58,22 @@ function Invoke-VcsaAudit {
         $SshComponents = $VcsaComponents | Where-Object { $_.Transport -eq "ssh" }
         $AllResults    = @()
 
+        # -------------------------------------------------------------
+        # PHASE 1: API (PowerCLI) Executions
+        # -------------------------------------------------------------
         Write-Host "[*] Disabling SSH & Running vCenter API Audit..." -ForegroundColor Cyan
         Set-VCSASshState -FQDN $Target.FQDN -Username $Target.AdminUser -Password $Target.AdminPass -Enabled $false
 
         $RawOut      = Join-Path $RawJsonDir "$($Target.FQDN)_$($ApiComponent.Component)_raw.json"
         $ProfilePath = Join-Path $VsphereProfileBaseDir $ApiComponent.ProfileFolder
         $Cmd = "VISERVER='$($Target.FQDN)' VISERVER_USERNAME='$($Target.AdminUser)' VISERVER_PASSWORD=`"`$(echo '$b64AdminPass' | base64 -d)`" cinc-auditor exec $ProfilePath -t vmware:// --input-file $InputsFile --reporter json:$RawOut"
-        
         bash -c $Cmd | Out-Null
+
+        if (Test-Path (Join-Path $CustomApiProfilePath "inspec.yml")) {
+            Write-Host " -> [$($Target.FQDN)] Executing Custom VCSA API Overlay..." -ForegroundColor DarkCyan
+            $CustomApiCmd = "VISERVER='$($Target.FQDN)' VISERVER_USERNAME='$($Target.AdminUser)' VISERVER_PASSWORD=`"`$(echo '$b64AdminPass' | base64 -d)`" cinc-auditor exec '$CustomApiProfilePath' -t vmware:// --input-file $InputsFile --reporter json:'$CustomApiRawOut'"
+            bash -c $CustomApiCmd 2>&1 | Out-Null
+        }
 
         if (Test-Path $RawOut) {
             $AllResults += [PSCustomObject]@{ 
@@ -66,6 +81,8 @@ function Invoke-VcsaAudit {
                 TargetType       = "VCSA"; 
                 DisaComponent    = $ApiComponent.Component; 
                 RawJsonFile      = $RawOut;
+                CustomApiJsonFile= if (Test-Path $CustomApiRawOut) { $CustomApiRawOut } else { $null };
+                CustomSshJsonFile= $null;
                 vCenterShortName = $Target.vCenterShortName;
                 DateStr          = $Target.DateStr;
                 IPAddress        = $NetInfo.IPAddress;
@@ -73,12 +90,21 @@ function Invoke-VcsaAudit {
             }
         }
 
-        Write-Host "[*] Enabling SSH & Running 9 VCSA Services in parallel..." -ForegroundColor Cyan
+        # -------------------------------------------------------------
+        # PHASE 2: SSH Executions
+        # -------------------------------------------------------------
+        Write-Host "[*] Enabling SSH & Running VCSA Services..." -ForegroundColor Cyan
         Set-VCSASshState -FQDN $Target.FQDN -Username $Target.AdminUser -Password $Target.AdminPass -Enabled $true
 
         $PreFlightSuccess = Set-VCSABashShell -FQDN $Target.FQDN -RootPassword $Target.RootPass
         if (-not $PreFlightSuccess) {
             Throw "CRITICAL: Pre-flight shell verification failed for $($Target.FQDN)."
+        }
+
+        if (Test-Path (Join-Path $CustomSshProfilePath "inspec.yml")) {
+            Write-Host " -> [$($Target.FQDN)] Executing Custom VCSA SSH Overlay..." -ForegroundColor DarkCyan
+            $CustomSshCmd = "env -u VISERVER -u VISERVER_USERNAME -u VISERVER_PASSWORD cinc-auditor exec '$CustomSshProfilePath' -t ssh://root@$($Target.FQDN) --password `"`$(echo '$b64RootPass' | base64 -d)`" --input-file $InputsFile --reporter json:'$CustomSshRawOut'"
+            bash -c $CustomSshCmd 2>&1 | Out-Null
         }
 
         $SshResults = $SshComponents | ForEach-Object -Parallel {
@@ -102,6 +128,8 @@ function Invoke-VcsaAudit {
                     TargetType       = "VCSA"; 
                     DisaComponent    = $App.Component; 
                     RawJsonFile      = $RawOut;
+                    CustomApiJsonFile= $null;
+                    CustomSshJsonFile= if (Test-Path $using:CustomSshRawOut) { $using:CustomSshRawOut } else { $null };
                     vCenterShortName = $Target.vCenterShortName;
                     DateStr          = $Target.DateStr;
                     IPAddress        = $NetInfo.IPAddress;
@@ -117,7 +145,6 @@ function Invoke-VcsaAudit {
         Write-Host "[*] Audits Complete. Securing appliance (Disabling SSH)..." -ForegroundColor Cyan
         Set-VCSASshState -FQDN $Target.FQDN -Username $Target.AdminUser -Password $Target.AdminPass -Enabled $false
 
-        # Output to formatting pipeline
         $AllResults | Write-Output
     }
 }

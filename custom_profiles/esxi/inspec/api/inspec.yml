@@ -1,0 +1,21 @@
+---
+name: custom-esxi-api
+title: Custom ESXi API STIG Overrides
+maintainer: Custom
+copyright: Custom
+version: 1.0.0
+summary: Standalone custom controls for ESXi API
+inputs:
+  - name: vmhostName
+    type: string
+    value: ""
+  - name: cluster
+    type: string
+    value: ""
+  - name: allesxi
+    type: boolean
+    value: false
+  - name: nfsVlanId
+    type: string
+  - name: exceptionUsers
+    type: Array

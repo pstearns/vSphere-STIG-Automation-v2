@@ -53,7 +53,7 @@ function Set-EsxiAccessState {
     )
 
     $StateStr = if ($Enabled) { "Enabling" } else { "Disabling" }
-    Write-StigLog -Message "$StateStr SSH and modifying Lockdown Mode on ESXi: $EsxiHost" -Severity INFO -Source "SSHControl"
+    Write-StigLog -Message "$StateStr SSH, Lockdown Mode, and Password Policies on ESXi: $EsxiHost" -Severity INFO -Source "SSHControl"
     
     try {
         Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false -Scope Session | Out-Null
@@ -64,13 +64,35 @@ function Set-EsxiAccessState {
         $lockdown = Get-View $vmhostv.ConfigManager.HostAccessManager -ErrorAction Stop
         
         if ($Enabled) {
+            # 1. Disable Lockdown
             if ($vmhostv.config.LockdownMode -ne 'lockdownDisabled') { $lockdown.ChangeLockdownMode('lockdownDisabled') }
+            
+            # 2. Temporarily bypass Password Age and History for SSH access
+            $PasswordAge = $vmhost | Get-AdvancedSetting -Name Security.PasswordMaxDays
+            if ($PasswordAge.Value -ne '99999') { $vmhost | Get-AdvancedSetting -Name Security.PasswordMaxDays | Set-AdvancedSetting -Value 99999 -Confirm:$false | Out-Null }
+            
+            $PasswordHistory = $vmhost | Get-AdvancedSetting -Name Security.PasswordHistory
+            if ($PasswordHistory.Value -ne '0') { $vmhost | Get-AdvancedSetting -Name Security.PasswordHistory | Set-AdvancedSetting -Value 0 -Confirm:$false | Out-Null }
+            
+            # 3. Start SSH Service
             $vmhost | Get-VMHostService | Where-Object { $_.Key -eq "TSM-SSH"} | Start-VMHostService -Confirm:$false | Out-Null
+            
             Write-StigLog -Message "Access opened successfully on $EsxiHost" -Severity SUCCESS -Source "SSHControl"
         } 
         else {
+            # 1. Enable Lockdown Mode (Normal)
             if ($vmhostv.config.LockdownMode -ne 'lockdownNormal') { $lockdown.ChangeLockdownMode('lockdownNormal') }
+            
+            # 2. Restore STIG-compliant Password Age and History
+            $PasswordAge = $vmhost | Get-AdvancedSetting -Name Security.PasswordMaxDays
+            if ($PasswordAge.Value -ne '90') { $vmhost | Get-AdvancedSetting -Name Security.PasswordMaxDays | Set-AdvancedSetting -Value 90 -Confirm:$false | Out-Null }
+            
+            $PasswordHistory = $vmhost | Get-AdvancedSetting -Name Security.PasswordHistory
+            if ($PasswordHistory.Value -ne '5') { $vmhost | Get-AdvancedSetting -Name Security.PasswordHistory | Set-AdvancedSetting -Value 5 -Confirm:$false | Out-Null }
+            
+            # 3. Stop SSH Service
             $vmhost | Get-VMHostService | Where-Object { $_.Key -eq "TSM-SSH"} | Stop-VMHostService -Confirm:$false | Out-Null
+            
             Write-StigLog -Message "Access secured successfully on $EsxiHost" -Severity SUCCESS -Source "SSHControl"
         }
     }

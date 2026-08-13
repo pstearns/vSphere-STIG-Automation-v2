@@ -13,10 +13,6 @@ ntpServers:
   - "139.231.126.14"
   - "139.231.125.150"
   - "139.231.1.11"
-sslIssueOrg:
-  - "U.S. Government"
-  - "CIOG6"
-  - "USArmy"
-  - "G6"
+certificateIssuerOrg: 'U.S. Government, CIOG6, USArmy, G6'
 backup3rdParty: false
 embeddedIdp: true

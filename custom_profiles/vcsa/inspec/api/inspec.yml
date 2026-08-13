@@ -1,0 +1,7 @@
+---
+name: custom-vsca-api
+title: Custom VCSA API STIG Overrides
+maintainer: Custom
+copyright: Custom
+version: 1.0.0
+summary: Standalone custom controls for VCSA API

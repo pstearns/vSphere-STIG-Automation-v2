@@ -234,7 +234,10 @@ function Format-StigChecklist {
     }
 
     process {
-        $ResultsQueue += $AuditResult
+        # Ignore empty/null pipeline objects caused by partial test manifests
+        if ($null -ne $AuditResult -and -not [string]::IsNullOrWhiteSpace($AuditResult.TargetName)) {
+            $ResultsQueue += $AuditResult
+        }
     }
 
     end {
@@ -278,7 +281,6 @@ function Format-StigChecklist {
             $StagingDir = "/tmp/stig_staging/$($TargetName)"
             $TempBase = "$StagingDir/${TargetShortName}_${Component}"
 
-
             if ($TargetType -eq "ESXi") {
                 $ApiTempCkl = "${TempBase}_API_temp.ckl"
                 $SshTempCkl = "${TempBase}_SSH_temp.ckl"
@@ -320,16 +322,92 @@ function Format-StigChecklist {
                         }
                     }
                 }
-
-                if (-not $MasterTempCkl) { 
-                    Write-StigLog -Message "Failed to generate Temp CKLs for ESXi merging on $TargetName" -Severity ERROR -Source "Formatter"
-                    return 
-                }
-            }
-            else {
+            } else {
                 $MasterTempCkl = "${TempBase}_temp.ckl"
                 bash -c "saf convert hdf2ckl -i '$($AuditResult.RawJsonFile)' -o '$MasterTempCkl'" | Out-Null
             }
+
+            if (-not $MasterTempCkl) { 
+                Write-StigLog -Message "Failed to generate Temp CKLs for merging on $TargetName" -Severity ERROR -Source "Formatter"
+                return 
+            }
+
+            # =========================================================================
+            # UNIVERSAL CUSTOM OVERLAY ENGINE (Applies to ESXi, VCSA, and VMs)
+            # =========================================================================
+            
+            # --- Overlay Custom API Findings ---
+            if ($AuditResult.CustomApiJsonFile -and (Test-Path $AuditResult.CustomApiJsonFile)) {
+                Write-StigLog -Message "Converting Custom API JSON to Temp CKL for $TargetName" -Severity INFO -Source "Formatter"
+                $CustomApiTempCkl = "${TempBase}_CUSTOM_API_temp.ckl"
+                bash -c "saf convert hdf2ckl -i '$($AuditResult.CustomApiJsonFile)' -o '$CustomApiTempCkl'" | Out-Null
+                
+                if ((Test-Path $CustomApiTempCkl) -and $MasterTempCkl) {
+                    Write-StigLog -Message "Merging Custom API findings into Master CKL for $TargetName..." -Severity INFO -Source "Formatter"
+                    $MasterXml = New-Object System.Xml.XmlDocument
+                    $MasterXml.PreserveWhitespace = $true
+                    $MasterXml.Load($MasterTempCkl)
+                    
+                    $CustomXml = New-Object System.Xml.XmlDocument
+                    $CustomXml.Load($CustomApiTempCkl)
+
+                    $apiMergeCount = 0
+                    foreach ($customVuln in $CustomXml.CHECKLIST.STIGS.iSTIG.VULN) {
+                        $customIdNode = $customVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Vuln_Num" }
+                        if ($customIdNode) {
+                            $customId = $customIdNode.SelectSingleNode("ATTRIBUTE_DATA").InnerText
+                            $xpath = "/CHECKLIST/STIGS/iSTIG/VULN[STIG_DATA/VULN_ATTRIBUTE='Rule_Ver' and STIG_DATA/ATTRIBUTE_DATA='$customId']"
+                            $masterVulnNode = $MasterXml.SelectSingleNode($xpath)
+
+                            if ($masterVulnNode) {
+                                $masterVulnNode.SelectSingleNode("STATUS").InnerText = $customVuln.SelectSingleNode("STATUS").InnerText
+                                $masterVulnNode.SelectSingleNode("FINDING_DETAILS").InnerXml = $customVuln.SelectSingleNode("FINDING_DETAILS").InnerXml
+                                Write-StigLog -Message " -> Overwrote baseline for $customId with Custom API result" -Severity DEBUG -Source "Formatter"
+                                $apiMergeCount++
+                            }
+                        }
+                    }
+                    $MasterXml.Save($MasterTempCkl)
+                    if ($apiMergeCount -gt 0) { Write-StigLog -Message "Successfully merged $apiMergeCount Custom API findings for $TargetName" -Severity SUCCESS -Source "Formatter" }
+                }
+            }
+
+            # --- Overlay Custom SSH Findings ---
+            if ($AuditResult.CustomSshJsonFile -and (Test-Path $AuditResult.CustomSshJsonFile)) {
+                Write-StigLog -Message "Converting Custom SSH JSON to Temp CKL for $TargetName" -Severity INFO -Source "Formatter"
+                $CustomSshTempCkl = "${TempBase}_CUSTOM_SSH_temp.ckl"
+                bash -c "saf convert hdf2ckl -i '$($AuditResult.CustomSshJsonFile)' -o '$CustomSshTempCkl'" | Out-Null
+                
+                if ((Test-Path $CustomSshTempCkl) -and $MasterTempCkl) {
+                    Write-StigLog -Message "Merging Custom SSH findings into Master CKL for $TargetName..." -Severity INFO -Source "Formatter"
+                    $MasterXml = New-Object System.Xml.XmlDocument
+                    $MasterXml.PreserveWhitespace = $true
+                    $MasterXml.Load($MasterTempCkl)
+                    
+                    $CustomXml = New-Object System.Xml.XmlDocument
+                    $CustomXml.Load($CustomSshTempCkl)
+
+                    $sshMergeCount = 0
+                    foreach ($customVuln in $CustomXml.CHECKLIST.STIGS.iSTIG.VULN) {
+                        $customIdNode = $customVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Vuln_Num" }
+                        if ($customIdNode) {
+                            $customId = $customIdNode.SelectSingleNode("ATTRIBUTE_DATA").InnerText
+                            $xpath = "/CHECKLIST/STIGS/iSTIG/VULN[STIG_DATA/VULN_ATTRIBUTE='Rule_Ver' and STIG_DATA/ATTRIBUTE_DATA='$customId']"
+                            $masterVulnNode = $MasterXml.SelectSingleNode($xpath)
+
+                            if ($masterVulnNode) {
+                                $masterVulnNode.SelectSingleNode("STATUS").InnerText = $customVuln.SelectSingleNode("STATUS").InnerText
+                                $masterVulnNode.SelectSingleNode("FINDING_DETAILS").InnerXml = $customVuln.SelectSingleNode("FINDING_DETAILS").InnerXml
+                                Write-StigLog -Message " -> Overwrote baseline for $customId with Custom SSH result" -Severity DEBUG -Source "Formatter"
+                                $sshMergeCount++
+                            }
+                        }
+                    }
+                    $MasterXml.Save($MasterTempCkl)
+                    if ($sshMergeCount -gt 0) { Write-StigLog -Message "Successfully merged $sshMergeCount Custom SSH findings for $TargetName" -Severity SUCCESS -Source "Formatter" }
+                }
+            }
+            # =========================================================================
 
             if (Test-Path $MasterTempCkl) {
                 $UpdateJob = [PSCustomObject]@{
@@ -356,23 +434,21 @@ function Format-StigChecklist {
                     Update-CklTemplate -UpdateJobs @($UpdateJob) -UpdateType $TargetType
                     Write-Host " [+] Successfully formatted and saved: $FinalCkl" -ForegroundColor Green
 
-                    if ($AuditResult.RawJsonFile -and (Test-Path $AuditResult.RawJsonFile)) { Remove-Item -Path $AuditResult.RawJsonFile -Force -ErrorAction SilentlyContinue }
-                    if ($AuditResult.ApiJsonFile -and (Test-Path $AuditResult.ApiJsonFile)) { Remove-Item -Path $AuditResult.ApiJsonFile -Force -ErrorAction SilentlyContinue }
-                    if ($AuditResult.SshJsonFile -and (Test-Path $AuditResult.SshJsonFile)) { Remove-Item -Path $AuditResult.SshJsonFile -Force -ErrorAction SilentlyContinue }
-
                 } catch {
                     Write-StigLog -Message "Failed to apply final formatting for ${TargetName}: $($_.Exception.Message)" -Severity ERROR -Source "Formatter"
                 }
-
-                # Cleanup only THIS component's Temp CKLs
-                $FilesToRemove = @( (Get-ChildItem "${TempBase}*.ckl" -ErrorAction SilentlyContinue).FullName )
-                foreach ($file in $FilesToRemove) {
-                    if ($file -and (Test-Path $file)) { Remove-Item $file -Force -ErrorAction SilentlyContinue }
-                }
             } else {
-                Write-StigLog -Message "SAF CLI failed to generate Master Temp CKL for ${$TargetName}" -Severity ERROR -Source "Formatter"
+                Write-StigLog -Message "SAF CLI failed to generate Master Temp CKL for $TargetName" -Severity ERROR -Source "Formatter"
             }
         } -ThrottleLimit 15
+        
+        $UniqueTargets = $ResultsQueue | Select-Object -ExpandProperty TargetName -Unique
+        foreach ($Target in $UniqueTargets) {
+            $TargetStagingDir = "/tmp/stig_staging/$Target"
+            if (Test-Path $TargetStagingDir) {
+                Remove-Item -Path $TargetStagingDir -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
     }
 }
 

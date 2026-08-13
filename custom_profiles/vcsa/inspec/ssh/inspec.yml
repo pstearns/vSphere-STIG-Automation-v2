@@ -1,0 +1,7 @@
+---
+name: custom-vcsa-ssh
+title: Custom VCSA SSH STIG Overrides
+maintainer: Custom
+copyright: Custom
+version: 1.0.0
+summary: Standalone custom controls for VCSA SSH

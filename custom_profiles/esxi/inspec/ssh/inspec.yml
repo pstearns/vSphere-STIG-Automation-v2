@@ -1,0 +1,7 @@
+---
+name: custom-esxi-ssh
+title: Custom ESXi SSH STIG Overrides
+maintainer: Custom
+copyright: Custom
+version: 1.0.0
+summary: Standalone custom controls for ESXi SSH
