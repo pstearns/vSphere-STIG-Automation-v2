@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Worker module for Virtual Machine STIG Audits.
+    Worker module for Virtual Machine STIG Audits with Custom API Overlay.
 #>
 function Invoke-VmAudit {
     [CmdletBinding()]
@@ -30,7 +30,7 @@ function Invoke-VmAudit {
 
         $InputsFile = Join-Path $OverlayRoot "conf/vm/inputs.yml"
         
-        # --- NEW: Call the Helper for Asset Data ---
+        # Call the Helper for Asset Data
         $NetInfo = Get-VmNetworkInfo -vCenter $Target.vCenter -AdminUser $Target.AdminUser -AdminPass $Target.AdminPass -VmName $Target.Name
 
         $VsphereBasePath   = "/usr/share/stigs/vsphere/8.0"
@@ -39,26 +39,44 @@ function Invoke-VmAudit {
         $ApiProfilePath = Join-Path $VsphereBasePath "$LatestStigRelease/vsphere/inspec/vmware-vsphere-8.0-stig-baseline/vm"
         $RawOut         = Join-Path $RawJsonDir "$($Target.Name)_Virtual_Machine_raw.json"
 
+        # Define Custom Profile Paths
+        $CustomApiProfilePath = Join-Path $OverlayRoot "custom_profiles/vm/inspec/api"
+        $CustomApiRawOut      = Join-Path $RawJsonDir "$($Target.Name)_VM_CUSTOM_API_raw.json"
+
         $b64AdminPass = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Target.AdminPass))
-        
         $InputArg = if (Test-Path $InputsFile) { "--input-file '$InputsFile'" } else { "" }
-        $Cmd = "VISERVER='$($Target.vCenter)' VISERVER_USERNAME='$($Target.AdminUser)' VISERVER_PASSWORD=`"`$(echo '$b64AdminPass' | base64 -d)`" cinc-auditor exec '$ApiProfilePath' -t vmware:// $InputArg --input vmName=`"$($Target.Name)`" --reporter json:'$RawOut'"
         
-        # --- STANDARDIZED: Error Handling ---
+        # -------------------------------------------------------------
+        # Phase 1: Base API Audit
+        # -------------------------------------------------------------
+        $Cmd = "VISERVER='$($Target.vCenter)' VISERVER_USERNAME='$($Target.AdminUser)' VISERVER_PASSWORD=`"`$(echo '$b64AdminPass' | base64 -d)`" cinc-auditor exec '$ApiProfilePath' -t vmware:// $InputArg --input vmName=`"$($Target.Name)`" --reporter json:'$RawOut'"
         $BashOutput = bash -c $Cmd 2>&1
 
+        # -------------------------------------------------------------
+        # Phase 2: Custom API Overlay Execution
+        # -------------------------------------------------------------
+        if (Test-Path (Join-Path $CustomApiProfilePath "inspec.yml")) {
+            Write-Host " -> [$($Target.Name)] Executing Custom VM API Overlay..." -ForegroundColor DarkCyan
+            $CustomApiCmd = "VISERVER='$($Target.vCenter)' VISERVER_USERNAME='$($Target.AdminUser)' VISERVER_PASSWORD=`"`$(echo '$b64AdminPass' | base64 -d)`" cinc-auditor exec '$CustomApiProfilePath' -t vmware:// $InputArg --input vmName=`"$($Target.Name)`" --reporter json:'$CustomApiRawOut'"
+            $CustomBashOutput = bash -c $CustomApiCmd 2>&1
+        }
+
+        # -------------------------------------------------------------
+        # Phase 3: Format Pipeline Output
+        # -------------------------------------------------------------
         if (Test-Path $RawOut) {
-            # Stream the result down to the Formatter with the Asset Data included
             [PSCustomObject]@{ 
-                TargetName       = $Target.Name
-                TargetType       = "VM" 
-                DisaComponent    = "Virtual_Machine" 
-                RawJsonFile      = $RawOut 
-                vCenterShortName = $Target.vCenterShortName
-                DateStr          = $Target.DateStr
-                IPAddress        = $NetInfo.IPAddress 
-                MACAddress       = $NetInfo.MACAddress
-                DNSName          = $NetInfo.DNSName
+                TargetName        = $Target.Name
+                TargetType        = "VM" 
+                DisaComponent     = "Virtual_Machine" 
+                RawJsonFile       = $RawOut 
+                CustomApiJsonFile = if (Test-Path $CustomApiRawOut) { $CustomApiRawOut } else { $null }
+                CustomSshJsonFile = $null
+                vCenterShortName  = $Target.vCenterShortName
+                DateStr           = $Target.DateStr
+                IPAddress         = $NetInfo.IPAddress 
+                MACAddress        = $NetInfo.MACAddress
+                DNSName           = $NetInfo.DNSName
             }
         } else {
             Write-StigLog -Message "Scan failed to produce JSON for $($Target.Name). Cinc-Auditor Error: $BashOutput" -Severity ERROR -Source "VmWorker"

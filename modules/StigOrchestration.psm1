@@ -452,4 +452,98 @@ function Format-StigChecklist {
     }
 }
 
-Export-ModuleMember -Function Get-StigInventory, Invoke-StigAudit, Format-StigChecklist
+<#
+.SYNOPSIS
+    Executes sequenced multi-vCenter scans and structures silent logging.
+#>
+function Invoke-MultiVCenterOrchestration {
+    [CmdletBinding()]
+    param (
+        [string]$OverlayRoot = "/usr/share/stigs/orchestration_overlay",
+        [switch]$Silent
+    )
+
+    $StartTime = Get-Date
+    $LogDir = Join-Path $OverlayRoot "logs"
+    Initialize-StigLogging -LogDirectory $LogDir -Silent:$Silent
+
+    Write-StigLog -Message "Starting Multi-vCenter Sequenced STIG Auditing..." -Severity INFO -Source "MultiOrch"
+
+    try {
+        # 1. Connect once per vCenter to retrieve and build the master cross-vCenter inventory (Highly Optimized)
+        Write-StigLog -Message "Phase 1: Discovering cross-vCenter assets..." -Severity INFO -Source "MultiOrch"
+        $MasterInventory = Get-StigInventory -OverlayRoot $OverlayRoot -TargetType 'All'
+
+        # 2. Iterate through each vCenter one by one for localized, section-based execution
+        $CredentialFile = Join-Path $OverlayRoot "conf/.creds.json.encrypted"
+        $credentials = Get-vCenterCredentialStore -FilePath $CredentialFile
+        
+        foreach ($vCenterEntry in $credentials.vCenters) {
+            $vCenterFQDN = $vCenterEntry.FQDN
+            $vCenterShortName = ($vCenterFQDN -split '\.')[0].ToUpper()
+            $DateStr = Get-Date -Format "yyyyMMdd"
+
+            Write-StigLog -Message "=========================================================" -Severity INFO -Source "MultiOrch"
+            Write-StigLog -Message "Processing Orchestration Cycle for vCenter: $vCenterFQDN" -Severity INFO -Source "MultiOrch"
+            Write-StigLog -Message "=========================================================" -Severity INFO -Source "MultiOrch"
+
+            # =========================================================
+            # SECTION 1: VCSA SCAN, CHECKLIST GENERATION, & SUMMARY
+            # =========================================================
+            $VcsaTargets = $MasterInventory.vCenters | Where-Object { $_.FQDN -eq $vCenterFQDN }
+            if ($VcsaTargets) {
+                Write-StigLog -Message "[$vCenterShortName] SECTION 1: Initiating VCSA Scan..." -Severity INFO -Source "MultiOrch"
+                $VcsaManifest = [PSCustomObject]@{ vCenters = @($VcsaTargets); ESXiHosts = $null; VMs = $null }
+                
+                # Executes VCSA Scan and immediately pipelines to Format-StigChecklist
+                Invoke-StigAudit -TargetManifest $VcsaManifest -OverlayRoot $OverlayRoot
+                
+                # Immediate Section-Based Summary for VCSA
+                $VcsaReportPath = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/VCSA"
+                Write-StigLog -Message "[$vCenterShortName] VCSA Scan Complete. Compiling section-based summary..." -Severity INFO -Source "MultiOrch"
+                Get-StigScanSummary -ReportDir $VcsaReportPath
+            }
+
+            # =========================================================
+            # SECTION 2: ESXI SCAN, CHECKLIST GENERATION, & SUMMARY
+            # =========================================================
+            $EsxiTargets = $MasterInventory.ESXiHosts | Where-Object { $_.vCenter -eq $vCenterFQDN }
+            if ($EsxiTargets -and $EsxiTargets.Count -gt 0) {
+                Write-StigLog -Message "[$vCenterShortName] SECTION 2: Initiating ESXi Scan..." -Severity INFO -Source "MultiOrch"
+                $EsxiManifest = [PSCustomObject]@{ vCenters = $null; ESXiHosts = $EsxiTargets; VMs = $null }
+                
+                # Executes ESXi Scan (in batches) and immediately pipelines to Format-StigChecklist
+                Invoke-StigAudit -TargetManifest $EsxiManifest -OverlayRoot $OverlayRoot
+                
+                # Immediate Section-Based Summary for ESXi
+                $EsxiReportPath = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/ESXi"
+                Write-StigLog -Message "[$vCenterShortName] ESXi Scan Complete. Compiling section-based summary..." -Severity INFO -Source "MultiOrch"
+                Get-StigScanSummary -ReportDir $EsxiReportPath
+            }
+
+            # =========================================================
+            # SECTION 3: VM SCAN, CHECKLIST GENERATION, & SUMMARY
+            # =========================================================
+            $VmTargets = $MasterInventory.VMs | Where-Object { $_.vCenter -eq $vCenterFQDN }
+            if ($VmTargets -and $VmTargets.Count -gt 0) {
+                Write-StigLog -Message "[$vCenterShortName] SECTION 3: Initiating VM Scan (Long Running)..." -Severity INFO -Source "MultiOrch"
+                $VmManifest = [PSCustomObject]@{ vCenters = $null; ESXiHosts = $null; VMs = $VmTargets }
+                
+                # Executes VM Scan (in batches) and immediately pipelines to Format-StigChecklist
+                Invoke-StigAudit -TargetManifest $VmManifest -OverlayRoot $OverlayRoot
+                
+                # Immediate Section-Based Summary for VMs
+                $VmReportPath = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/VMs"
+                Write-StigLog -Message "[$vCenterShortName] VM Scan Complete. Compiling section-based summary..." -Severity INFO -Source "MultiOrch"
+                Get-StigScanSummary -ReportDir $VmReportPath
+            }
+        }
+
+        Write-ElapsedTime -StartTime $StartTime -Message "Multi-vCenter sequenced scanning cycle completed successfully." -Source "MultiOrch"
+    }
+    catch {
+        Write-StigLog -Message "Critical error halted the multi-vCenter orchestration pipeline: $($_.Exception.Message)" -Severity ERROR -Source "MultiOrch"
+    }
+}
+
+Export-ModuleMember -Function Get-StigInventory, Invoke-StigAudit, Format-StigChecklist, Invoke-MultiVCenterOrchestration
