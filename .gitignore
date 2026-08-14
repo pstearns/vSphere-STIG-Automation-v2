@@ -33,6 +33,7 @@ logs/
 *Transcript*.txt
 /tmp/*.ckl
 *_temp.ckl
+/stigman-watcher/inboxes/
 
 # Raw InSpec JSON Data
 *.json
