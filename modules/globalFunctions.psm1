@@ -381,15 +381,15 @@ function Update-CklTemplate {
 
 <#
 .SYNOPSIS
-    High-performance enterprise scanner compiling scan summaries from CKL files.
-    Optimized with native .NET collections and direct XML stream loading.
+    Compiles section-based scan summaries, checks against answers.xml, 
+    outputs to console/logs, and appends to centralized, long-term historical 
+    CSV logs located at the absolute root of the reports directory.
 #>
 function Get-StigScanSummary {
     [CmdletBinding()]
     param (
         [Parameter(Mandatory=$true)][string]$ReportDir,
-        [Parameter(Mandatory=$false)][string]$AnswersXmlPath,
-        [Parameter(Mandatory=$false)][string]$CsvPath
+        [Parameter(Mandatory=$false)][string]$AnswersXmlPath
     )
 
     Write-StigLog -Message "Compiling section-based scan summary for: $ReportDir" -Severity INFO -Source "SummaryEngine"
@@ -405,35 +405,44 @@ function Get-StigScanSummary {
         return
     }
 
-    # Optimization 1: Use .NET HashSet for high-speed O(1) lookups of answers.xml Rule_Vers
+    # 1. Resolve Path Directories
+    $vCenterRootDir  = Split-Path -Path $ReportDir -Parent
+    $vCenterName     = Split-Path -Path $vCenterRootDir -Leaf # e.g., HUARINFVC
+    $DateFolderDir   = Split-Path -Path $vCenterRootDir -Parent
+    $ReportsBaseDir  = Split-Path -Path $DateFolderDir -Parent # Absolute Reports Root
+    $ComponentType   = Split-Path -Path $ReportDir -Leaf       # e.g., ESXi, VCSA, VMs
+
+    # Consolidated historical files sit at the absolute root of the /reports workspace
+    $MasterCsvPath = Join-Path $ReportsBaseDir "Open_Items_Summary_${ComponentType}.csv"
+
+    # Ensure the root reports folder exists (precautionary)
+    if (-not (Test-Path $ReportsBaseDir)) {
+        New-Item -ItemType Directory -Path $ReportsBaseDir -Force | Out-Null
+    }
+
+    # 2. Load Known Answers from answers.xml into a high-performance O(1) HashSet
     $KnownRuleSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    
     if ($AnswersXmlPath -and (Test-Path $AnswersXmlPath)) {
         try {
             $AnswersXml = New-Object System.Xml.XmlDocument
-            $AnswersXml.Load($AnswersXmlPath) # Direct .NET file-stream loading
-            $StigNodes = $AnswersXml.SelectNodes("/Answers/STIG") # Direct XPath lookup
-            
+            $AnswersXml.Load($AnswersXmlPath)
+            $StigNodes = $AnswersXml.SelectNodes("/Answers/STIG")
             if ($null -eq $StigNodes -or $StigNodes.Count -eq 0) {
-                # Fallback to root search if answers file schema doesn't use standard root
                 $StigNodes = $AnswersXml.SelectNodes("//STIG")
             }
-
             foreach ($Node in $StigNodes) {
                 if ($Node.ID) { [void]$KnownRuleSet.Add($Node.ID) }
             }
-            Write-StigLog -Message "Loaded $($KnownRuleSet.Count) known rules from answers.xml into fast lookup memory." -Severity INFO -Source "SummaryEngine"
         }
         catch {
             Write-StigLog -Message "Failed to parse answers.xml: $($_.Exception.Message)" -Severity WARN -Source "SummaryEngine"
         }
     }
 
-    # Optimization 2: Use Generic List to avoid memory fragmentation from array resizing ($arr += $item)
+    # 3. Parse CKL files and pull Open vulnerabilities with high-speed aggregation
     $OpenSummaryList = [System.Collections.Generic.List[PSCustomObject]]::new()
     $ScanDate = (Get-Date -Format "dd-MMM-yyyy HH:mm")
 
-    # 3. Parse CKL checklists using direct .NET XML Load and Absolute XPath queries
     foreach ($File in $CklFiles) {
         try {
             $CklXml = New-Object System.Xml.XmlDocument
@@ -446,9 +455,7 @@ function Get-StigScanSummary {
             $HostFQDN  = $AssetNode.SelectSingleNode("HOST_FQDN").InnerText
             $AssetType = $AssetNode.SelectSingleNode("ROLE").InnerText
 
-            # Optimization 3: Precise absolute XPath instead of recursive (//) traversal
             $OpenVulns = $CklXml.SelectNodes("/CHECKLIST/STIGS/iSTIG/VULN[STATUS='Open']")
-            
             foreach ($v in $OpenVulns) {
                 $StigData = $v.SelectNodes("STIG_DATA")
                 $RuleID = ($StigData | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Vuln_Num" }).SelectSingleNode("ATTRIBUTE_DATA").InnerText
@@ -463,11 +470,11 @@ function Get-StigScanSummary {
                     default  { "UNKNOWN" }
                 }
 
-                # High-speed HashSet check
                 $Known = if ($KnownRuleSet.Contains($RuleVer)) { "True" } else { "False" }
 
                 $OpenSummaryList.Add([PSCustomObject]@{
                     Date       = $ScanDate
+                    vCenter    = $vCenterName
                     Host       = if ($HostFQDN) { $HostFQDN } else { $HostName }
                     IPAddress  = $HostIP
                     RuleVer    = $RuleVer
@@ -485,28 +492,27 @@ function Get-StigScanSummary {
         }
     }
 
-    # Convert generic list back to standard PowerShell array for formatting output
     $OpenSummaryArray = $OpenSummaryList.ToArray()
 
-    # 4. Generate visual console output & write the same structured table to log file
+    # 4. Construct dashboards and write tables to stdout and daily log file
     $DashboardHeader = @"
 
 ************************************************************************
-  SECTION SUMMARY: OPEN STIG CONTROLS
+  SECTION SUMMARY: OPEN $ComponentType CONTROLS
   Source: $ReportDir
 ************************************************************************
 "@
 
     $DashboardTable = ""
     if ($OpenSummaryArray.Count -gt 0) {
-        $DashboardTable = $OpenSummaryArray | Sort-Object Host, Severity, RuleVer | Format-Table -Property Host, RuleVer, STIGID, Severity, Known, Title -AutoSize | Out-String
+        $DashboardTable = $OpenSummaryArray | Sort-Object Host, Severity, RuleVer | Format-Table -Property vCenter, Host, RuleVer, STIGID, Severity, Known, Title -AutoSize | Out-String
     } else {
         $DashboardTable = "  [+] No open items found in this section! Compliant status confirmed.`n"
     }
 
     $DashboardFooter = "************************************************************************`n"
 
-    # Write Table to Console ONLY if not silent
+    # Console display output (if not running silently)
     if (-not $global:StigSilentMode) {
         Write-Host $DashboardHeader -ForegroundColor Cyan
         if ($OpenSummaryArray.Count -gt 0) {
@@ -517,53 +523,58 @@ function Get-StigScanSummary {
         Write-Host $DashboardFooter -ForegroundColor Cyan
     }
 
-    # Capture the same output in the encrypted App Log regardless of silent mode
+    # Append formatted console layout directly to master log file (independent of silent mode)
     if ($global:StigAppLog) {
         $FullDashboardText = $DashboardHeader + "`r`n" + $DashboardTable + $DashboardFooter
         Add-Content -Path $global:StigAppLog -Value $FullDashboardText
     }
 
-    # Update counts in standard app log channels
+    # Record operational count logs
     $OpenCount = $OpenSummaryArray.Count
     $KnownCount = ($OpenSummaryArray | Where-Object { $_.Known -eq "True" }).Count
     $UnknownCount = $OpenCount - $KnownCount
-    Write-StigLog -Message "Section summary compiled: $OpenCount Open Vulnerabilities ($KnownCount Known/Waivered, $UnknownCount Unknown/Action Required)" -Severity SUCCESS -Source "SummaryEngine"
+    Write-StigLog -Message "Section summary compiled for ${$ComponentType}: $OpenCount Open Vulnerabilities ($KnownCount Known, $UnknownCount Unknown/Action Required)" -Severity SUCCESS -Source "SummaryEngine"
 
-    # 5. Export to CSV Report
-    $FinalCsvPath = if ($CsvPath) { $CsvPath } else { Join-Path $ReportDir "Open_Items_Summary_$((Get-Date).ToString('yyyyMMdd_HHmmss')).csv" }
-    
+    # 5. Component CSV Append Logging
     if ($OpenSummaryArray.Count -gt 0) {
         try {
-            $OpenSummaryArray | Export-Csv -Path $FinalCsvPath -NoTypeInformation -Force
-            Write-StigLog -Message "Exported section-based CSV summary to: $FinalCsvPath" -Severity SUCCESS -Source "SummaryEngine"
+            # Standardizes output headers: creates file if missing, appends if existing
+            if (-not (Test-Path $MasterCsvPath)) {
+                $OpenSummaryArray | Export-Csv -Path $MasterCsvPath -NoTypeInformation -Force
+            } else {
+                $OpenSummaryArray | Export-Csv -Path $MasterCsvPath -NoTypeInformation -Append -Force
+            }
+            Write-StigLog -Message "Successfully written section results to Centralized CSV: $MasterCsvPath" -Severity SUCCESS -Source "SummaryEngine"
         }
         catch {
-            Write-StigLog -Message "Failed to export CSV report: $($_.Exception.Message)" -Severity ERROR -Source "SummaryEngine"
+            Write-StigLog -Message "Failed to write scan summary to Centralized CSV. Error: $($_.Exception.Message)" -Severity ERROR -Source "SummaryEngine"
         }
     } else {
-        # Export a clean header-matching placeholder CSV for compliance parsing consistency
+        # Export a clean header-compliant placeholder CSV if no open issues exist and file is missing
         try {
-            $HeadersObj = [PSCustomObject]@{
-                Date       = $ScanDate
-                Host       = "N/A"
-                IPAddress  = "N/A"
-                RuleVer    = "N/A"
-                STIGID     = "N/A"
-                Severity   = "N/A"
-                Title      = "No open items found."
-                Known      = "N/A"
-                AssetType  = "N/A"
-                FileName   = "N/A"
+            if (-not (Test-Path $MasterCsvPath)) {
+                $HeadersObj = [PSCustomObject]@{
+                    Date       = $ScanDate
+                    vCenter    = $vCenterName
+                    Host       = "N/A"
+                    IPAddress  = "N/A"
+                    RuleVer    = "N/A"
+                    STIGID     = "N/A"
+                    Severity   = "N/A"
+                    Title      = "No open items found in this category."
+                    Known      = "N/A"
+                    AssetType  = "N/A"
+                    FileName   = "N/A"
+                }
+                $HeadersObj | Export-Csv -Path $MasterCsvPath -NoTypeInformation -Force
             }
-            $HeadersObj | Export-Csv -Path $FinalCsvPath -NoTypeInformation -Force
-            Write-StigLog -Message "Exported clean placeholder CSV summary to: $FinalCsvPath" -Severity SUCCESS -Source "SummaryEngine"
+            Write-StigLog -Message "Exported clean placeholder CSV for ${$ComponentType}: $MasterCsvPath" -Severity SUCCESS -Source "SummaryEngine"
         }
         catch {
-            Write-StigLog -Message "Failed to export placeholder CSV: $($_.Exception.Message)" -Severity ERROR -Source "SummaryEngine"
+            Write-StigLog -Message "Failed to export placeholder CSV for ${ComponentType}: $($_.Exception.Message)" -Severity ERROR -Source "SummaryEngine"
         }
     }
 }
-
 
 <#
 .SYNOPSIS

@@ -27,8 +27,8 @@ Import-Module (Join-Path $Script:OverlayRoot "modules/vm/Invoke-VmAudit.psm1") -
 .SYNOPSIS
     Discovers vCenter inventory and builds the target manifest.
 .DESCRIPTION
-    Dynamically builds the execution manifest. Optimized to only query PowerCLI 
-    if ESXi or VM targets are explicitly requested, saving significant execution time.
+    Dynamically builds the execution manifest based on targets enabled in global_config.yml.
+    Cross-references FQDNs with the secure AES-256 encrypted credential store.
 #>
 function Get-StigInventory {
     [CmdletBinding()]
@@ -41,14 +41,39 @@ function Get-StigInventory {
     $CredentialFile = Join-Path $OverlayRoot "conf/.creds.json.encrypted"
     $DateStr        = Get-Date -Format "yyyyMMdd"
 
-    $credentials = Get-vCenterCredentialStore -FilePath $CredentialFile
-    if (-not $credentials.vCenters) { Throw "No vCenters found in the credential vault." }
-
-        $GlobalConfPath = Join-Path $OverlayRoot "conf/global_config.yml"
+    # 1. Load global configuration settings
+    $GlobalConfPath = Join-Path $OverlayRoot "conf/global_config.yml"
     if (-not (Test-Path $GlobalConfPath)) { Throw "Global configuration not found at $GlobalConfPath" }
     $GlobalConf = Get-Content $GlobalConfPath -Raw | ConvertFrom-Yaml
     
     $VmExclusionRegex = if ($GlobalConf.vm_exclusion_regex) { $GlobalConf.vm_exclusion_regex } else { "^vCLS|NSX|vCenter|Appliance.*" }
+
+    # 2. Extract only enabled FQDNs from plain-text configuration
+    $ActiveFqdns = [System.Collections.Generic.List[string]]::new()
+    if ($GlobalConf.vcenter_targets) {
+        foreach ($t in $GlobalConf.vcenter_targets) {
+            # Safely handle hashtable and object deserialization styles
+            $Fqdn    = if ($t.fqdn) { $t.fqdn } else { $t["fqdn"] }
+            $Enabled = if ($null -ne $t.enabled) { $t.enabled } else { $t["enabled"] }
+
+            if ($Enabled -eq $true -or $Enabled -eq "true") {
+                [void]$ActiveFqdns.Add($Fqdn)
+            } else {
+                Write-StigLog -Message "vCenter scanning is disabled in global_config.yml: $Fqdn" -Severity INFO -Source "Inventory"
+            }
+        }
+    } else {
+        Throw "No vcenter_targets section defined in global_config.yml."
+    }
+
+    if ($ActiveFqdns.Count -eq 0) {
+        Write-StigLog -Message "No enabled vCenter targets found in global_config.yml. Inventory manifest empty." -Severity WARN -Source "Inventory"
+        return [PSCustomObject]@{ vCenters = $null; ESXiHosts = $null; VMs = $null }
+    }
+
+    # 3. Retrieve the secure credential store
+    $credentials = Get-vCenterCredentialStore -FilePath $CredentialFile
+    if (-not $credentials.vCenters) { Throw "No vCenter credential entries found in the secure vault." }
 
     $MasterTargetList = [PSCustomObject]@{
         vCenters  = $null
@@ -62,10 +87,17 @@ function Get-StigInventory {
 
     Write-Host "[*] Starting Dynamic Inventory Discovery (Target Types: $($TargetType -join ', '))..." -ForegroundColor Cyan
 
-    foreach ($entry in $credentials.vCenters) {
-        $vCenterFQDN = $entry.FQDN
+    # 4. Only process targets that are enabled in plain-text config and exist in vault
+    foreach ($vCenterFQDN in $ActiveFqdns) {
         $vCenterShortName = ($vCenterFQDN -split '\.')[0].ToUpper()
         
+        # Verify that secure credentials exist for the enabled target
+        $vaultEntry = $credentials.vCenters | Where-Object { $_.FQDN -eq $vCenterFQDN }
+        if ($null -eq $vaultEntry) {
+            Write-StigLog -Message "CRITICAL: Scans enabled for '$vCenterFQDN' but no secure credentials exist in vault. Skipping." -Severity ERROR -Source "Inventory"
+            continue
+        }
+
         Write-Verbose "Processing Credentials for $vCenterFQDN ($vCenterShortName)..."
         
         $credObj   = Get-vCenterCredential -FQDN $vCenterFQDN -FilePath $CredentialFile

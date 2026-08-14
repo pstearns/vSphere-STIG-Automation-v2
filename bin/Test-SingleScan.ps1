@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Secure test harness to verify targeted single-asset scanning, checklist formatting,
-    and optimized summaries for VCSA, ESXi, and VMs using secure credentials from the vault.
+    section summaries, and STIG Manager Sync uploads using secure vault credentials.
 #>
 [CmdletBinding()]
 param (
@@ -27,7 +27,7 @@ if (-not (Test-Path $CredentialFile)) {
     return
 }
 
-Write-Host "[*] Retrieving credentials from secure vault for FQDN: ${$vCenter}..." -ForegroundColor Cyan
+Write-Host "[*] Retrieving credentials from secure vault for FQDN: $vCenter..." -ForegroundColor Cyan
 $vCenterCreds = Get-vCenterCredential -FQDN $vCenter -FilePath $CredentialFile
 
 if ($null -eq $vCenterCreds) {
@@ -53,7 +53,7 @@ Write-Host "             STARTING SECURE END-TO-END TEST RUN" -ForegroundColor C
 Write-Host "========================================================" -ForegroundColor Cyan
 
 # =========================================================================
-# TEST 1: SINGLE VCSA AUDIT -> CHECKLIST -> SECTION SUMMARY
+# TEST 1: SINGLE VCSA AUDIT -> CHECKLIST -> SUMMARY -> SYNC
 # =========================================================================
 Write-Host "`n[TEST 1/3] Initiating VCSA Appliance STIG Run..." -ForegroundColor Yellow
 
@@ -68,19 +68,19 @@ $SingleVcsaTarget = [PSCustomObject]@{
 }
 
 try {
-    # Execute VCSA Worker directly
     $VcsaResult = Invoke-VcsaAudit -Target $SingleVcsaTarget -OverlayRoot $OverlayRoot
     
     if ($null -ne $VcsaResult) {
-        # Stream into checklist formatter
         $VcsaResult | Format-StigChecklist -OverlayRoot $OverlayRoot
         
-        # Run optimized section-based summary
         $VcsaReportPath = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShort/VCSA"
         $VcsaAnswersXml = Join-Path $OverlayRoot "conf/vcsa/answers.xml"
         
         Write-Host "`n[+] VCSA Audit & Formatting finished. Running section summary..." -ForegroundColor Green
         Get-StigScanSummary -ReportDir $VcsaReportPath -AnswersXmlPath $VcsaAnswersXml
+
+        # Call STIG Manager Watcher Sync
+        Invoke-StigManSync -vCenterShortName $vCenterShort -SectionReportDir $VcsaReportPath -OverlayRoot $OverlayRoot
     } else {
         Write-Warning "VCSA Audit completed but did not produce XML results."
     }
@@ -90,7 +90,7 @@ catch {
 }
 
 # =========================================================================
-# TEST 2: SINGLE ESXI AUDIT -> CHECKLIST -> SECTION SUMMARY
+# TEST 2: SINGLE ESXI AUDIT -> CHECKLIST -> SUMMARY -> SYNC
 # =========================================================================
 Write-Host "`n[TEST 2/3] Initiating Single ESXi Host STIG Run..." -ForegroundColor Yellow
 
@@ -107,19 +107,19 @@ $SingleEsxiTarget = @(
 )
 
 try {
-    # Execute ESXi worker with vault credentials
     $EsxiResult = Invoke-EsxiAudit -TargetList $SingleEsxiTarget -OverlayRoot $OverlayRoot
     
     if ($null -ne $EsxiResult) {
-        # Stream into checklist formatter
         $EsxiResult | Format-StigChecklist -OverlayRoot $OverlayRoot
         
-        # Run optimized section-based summary
         $EsxiReportPath = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShort/ESXi"
         $EsxiAnswersXml = Join-Path $OverlayRoot "conf/esxi/answers.xml"
         
         Write-Host "`n[+] ESXi Audit & Formatting finished. Running section summary..." -ForegroundColor Green
         Get-StigScanSummary -ReportDir $EsxiReportPath -AnswersXmlPath $EsxiAnswersXml
+
+        # Call STIG Manager Watcher Sync
+        Invoke-StigManSync -vCenterShortName $vCenterShort -SectionReportDir $EsxiReportPath -OverlayRoot $OverlayRoot
     } else {
         Write-Warning "ESXi Audit completed but did not produce XML results."
     }
@@ -129,7 +129,7 @@ catch {
 }
 
 # =========================================================================
-# TEST 3: SINGLE VM AUDIT -> CHECKLIST -> SECTION SUMMARY
+# TEST 3: SINGLE VM AUDIT -> CHECKLIST -> SUMMARY -> SYNC
 # =========================================================================
 Write-Host "`n[TEST 3/3] Initiating Single Virtual Machine STIG Run..." -ForegroundColor Yellow
 
@@ -145,19 +145,19 @@ $SingleVmTarget = @(
 )
 
 try {
-    # Execute VM worker with vault credentials
     $VmResult = Invoke-VmAudit -TargetList $SingleVmTarget -OverlayRoot $OverlayRoot
     
     if ($null -ne $VmResult) {
-        # Stream into checklist formatter
         $VmResult | Format-StigChecklist -OverlayRoot $OverlayRoot
         
-        # Run optimized section-based summary
         $VmReportPath = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShort/VMs"
         $VmAnswersXml = Join-Path $OverlayRoot "conf/vm/answers.xml"
         
         Write-Host "`n[+] VM Audit & Formatting finished. Running section summary..." -ForegroundColor Green
         Get-StigScanSummary -ReportDir $VmReportPath -AnswersXmlPath $VmAnswersXml
+
+        # Call STIG Manager Watcher Sync
+        Invoke-StigManSync -vCenterShortName $vCenterShort -SectionReportDir $VmReportPath -OverlayRoot $OverlayRoot
     } else {
         Write-Warning "VM Audit completed but did not produce XML results."
     }
