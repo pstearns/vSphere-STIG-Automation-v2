@@ -12,7 +12,9 @@
 *.env
 *secret*
 conf/*.yml
-conf/*.xml
+conf/*/*.yml
+conf/*/*.xml
+
 
 # EXCEPT this specific example file (force tracking)
 !example.env
