@@ -1,4 +1,5 @@
 #!/bin/bash
+
 # Ensure a collection number was provided
 if [ -z "$1" ]; then
   echo "Error: You must provide a Collection ID."
@@ -28,8 +29,9 @@ export NODE_TLS_REJECT_UNAUTHORIZED=0
 export WATCHER_HISTORY_FILE="${INBOX_DIR}/watcher-history-col-${COLLECTION_ID}.yaml"
 
 # 3. Load variables safely from the specific collection .env file
+#    Added: Dynamic carriage return (\r) stripping to prevent trailing Windows character mismatches
 set -a
-source <(grep -v '^#' "$ENV_FILE" | grep -v '^$')
+source <(grep -v '^#' "$ENV_FILE" | grep -v '^$' | tr -d '\r')
 set +a
 
 # 4. Change directory to the binary folder and run, explicitly targeting the inbox
@@ -41,4 +43,3 @@ echo "Starting scan for Collection ${COLLECTION_ID} in ${INBOX_DIR}..."
   --mode scan \
   --one-shot \
   -p "$INBOX_DIR"
-
