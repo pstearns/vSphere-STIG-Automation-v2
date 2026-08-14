@@ -7,19 +7,16 @@
 .vscode/
 *.swp
 
-#Config Files
-.env
+# Ignore active production secrets
+conf/*/inputs.yml
+conf/*/answers.xml
+conf/vault.key
+conf/.creds.json.encrypted
+conf/global_config.yml
+
+# Ignore all systemd environment overrides
 *.env
-*secret*
-conf/*.yml
-conf/*/*.yml
-conf/*/*.xml
-
-
-# EXCEPT this specific example file (force tracking)
 !example.env
-!answers_example.xml
-!inputs_example.yml
 
 # Credentials & Vaults (CRITICAL)
 conf/vault.key
