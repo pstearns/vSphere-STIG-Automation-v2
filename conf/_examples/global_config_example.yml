@@ -1,0 +1,5 @@
+# /usr/share/stigs/orchestration_overlay/conf/global_config.yml
+stig_release: "U_VMW_vSphere_8-0_Y26M07"
+marking: "CUI"
+classification: "U"
+vm_exclusion_regex: "^vCLS|NSX|vCenter|Appliance.*"

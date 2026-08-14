@@ -1,0 +1,21 @@
+# VCSA Varibles
+# ==================================================================
+classification: "U"
+MARKING: "<YOUR_DATA_MARKING>" # e.g., 'CUI', 'FOUO', etc.
+authprivlog: "/var/log/audit/sshinfo.log"
+
+syslogServers:
+  - "udp://<SYSLOG_SERVER_1_FQDN_OR_IP>:<PORT>"
+  - "<SYSLOG_SERVER_2_IP>"
+  - "<SYSLOG_SERVER_3_IP>"
+  - "<SYSLOG_SERVER_4_FQDN>"
+
+ntpServers:
+  - "<NTP_SERVER_1_IP>"
+  - "<NTP_SERVER_2_IP>"
+  - "<NTP_SERVER_3_IP>"
+  - "<NTP_SERVER_4_IP>"
+
+certificateIssuerOrg: '<YOUR_CERTIFICATE_ISSUER_ORG>' # e.g., 'U.S. Government, CIOG6, USArmy, G6'
+backup3rdParty: false
+embeddedIdp: true

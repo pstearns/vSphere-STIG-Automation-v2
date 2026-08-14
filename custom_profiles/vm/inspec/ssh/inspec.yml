@@ -1,0 +1,7 @@
+---
+name: custom-vm-ssh
+title: Custom VM SSH STIG Overrides
+maintainer: Custom
+copyright: Custom
+version: 1.0.0
+summary: Standalone custom controls for VM SSH
