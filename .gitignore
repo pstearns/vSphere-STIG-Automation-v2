@@ -7,6 +7,18 @@
 .vscode/
 *.swp
 
+#Config Files
+.env
+*.env
+*secret*
+conf/*.yml
+conf/*.xml
+
+# EXCEPT this specific example file (force tracking)
+!example.env
+!answers_example.xml
+!inputs_example.yml
+
 # Credentials & Vaults (CRITICAL)
 conf/vault.key
 conf/.creds.json.encrypted
