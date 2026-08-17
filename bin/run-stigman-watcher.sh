@@ -22,14 +22,14 @@ fi
 # Ensure the inbox directory exists
 mkdir -p "$INBOX_DIR"
 
-# 1. Global TLS bypass for Node.js
+# 1. Global TLS bypass and Warning suppression for Node.js
 export NODE_TLS_REJECT_UNAUTHORIZED=0
+export NODE_NO_WARNINGS=1 # <-- ADD THIS LINE HERE TO SILENCE ALL RUNTIME WARNINGS
 
 # 2. Tell the watcher to write its history file cleanly inside the specific collection inbox
 export WATCHER_HISTORY_FILE="${INBOX_DIR}/watcher-history-col-${COLLECTION_ID}.yaml"
 
 # 3. Load variables safely from the specific collection .env file
-#    Added: Dynamic carriage return (\r) stripping to prevent trailing Windows character mismatches
 set -a
 source <(grep -v '^#' "$ENV_FILE" | grep -v '^$' | tr -d '\r')
 set +a

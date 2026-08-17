@@ -4,24 +4,28 @@
 #              summarizes outputs, and syncs to STIG Manager by individual class.
 # =========================================================================
 
+# Resolve Overlay Root Dynamically at Module Import (Ensures Portability)
 if (Test-Path "/usr/share/stigs/orchestration_overlay") {
     $Script:OverlayRoot = "/usr/share/stigs/orchestration_overlay"
 } else {
-    $Script:OverlayRoot = (Resolve-Path "$PSScriptRoot/..").Path
+    $Script:OverlayRoot = (Resolve-Path "$PSScriptRoot/..").FullName
 }
 
-# Load Dependencies and Workers dynamically from the Overlay Root
-Import-Module powershell-yaml -Global -Force -ErrorAction Stop 
-Import-Module (Join-Path $Script:OverlayRoot "modules/CredentialManagement.psm1") -Global -Force -ErrorAction Stop
-Import-Module (Join-Path $Script:OverlayRoot "modules/globalFunctions.psm1") -Global -Force -ErrorAction Stop
+# Silence all PowerCLI warnings globally in parent context
+$WarningPreference = 'SilentlyContinue'
 
-Import-Module (Join-Path $Script:OverlayRoot "modules/vcsa/VcsaHelpers.psm1") -Global -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $Script:OverlayRoot "modules/esxi/EsxiHelpers.psm1") -Global -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $Script:OverlayRoot "modules/vm/VmHelpers.psm1") -Global -Force -ErrorAction SilentlyContinue
+# Load Dependencies and Workers dynamically from the Resolved Overlay Root
+Import-Module powershell-yaml -Global -Force -ErrorAction Stop -DisableNameChecking -WarningAction SilentlyContinue
+Import-Module (Join-Path $Script:OverlayRoot "modules/CredentialManagement.psm1") -Global -Force -ErrorAction Stop -DisableNameChecking -WarningAction SilentlyContinue
+Import-Module (Join-Path $Script:OverlayRoot "modules/globalFunctions.psm1") -Global -Force -ErrorAction Stop -DisableNameChecking -WarningAction SilentlyContinue
 
-Import-Module (Join-Path $Script:OverlayRoot "modules/vcsa/Invoke-VcsaAudit.psm1") -Global -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $Script:OverlayRoot "modules/esxi/Invoke-EsxiAudit.psm1") -Global -Force -ErrorAction SilentlyContinue
-Import-Module (Join-Path $Script:OverlayRoot "modules/vm/Invoke-VmAudit.psm1") -Global -Force -ErrorAction SilentlyContinue
+Import-Module (Join-Path $Script:OverlayRoot "modules/vcsa/VcsaHelpers.psm1") -Global -Force -ErrorAction SilentlyContinue -DisableNameChecking -WarningAction SilentlyContinue
+Import-Module (Join-Path $Script:OverlayRoot "modules/esxi/EsxiHelpers.psm1") -Global -Force -ErrorAction SilentlyContinue -DisableNameChecking -WarningAction SilentlyContinue
+Import-Module (Join-Path $Script:OverlayRoot "modules/vm/VmHelpers.psm1") -Global -Force -ErrorAction SilentlyContinue -DisableNameChecking -WarningAction SilentlyContinue
+
+Import-Module (Join-Path $Script:OverlayRoot "modules/vcsa/Invoke-VcsaAudit.psm1") -Global -Force -ErrorAction SilentlyContinue -DisableNameChecking -WarningAction SilentlyContinue
+Import-Module (Join-Path $Script:OverlayRoot "modules/esxi/Invoke-EsxiAudit.psm1") -Global -Force -ErrorAction SilentlyContinue -DisableNameChecking -WarningAction SilentlyContinue
+Import-Module (Join-Path $Script:OverlayRoot "modules/vm/Invoke-VmAudit.psm1") -Global -Force -ErrorAction SilentlyContinue -DisableNameChecking -WarningAction SilentlyContinue
 
 <#
 .SYNOPSIS
@@ -35,6 +39,7 @@ function Get-StigInventory {
         [string[]]$TargetType = @('All')
     )
 
+    $WarningPreference = 'SilentlyContinue'
     $CredentialFile = Join-Path $OverlayRoot "conf/.creds.json.encrypted"
     $DateStr        = Get-Date -Format "yyyyMMdd"
 
@@ -119,8 +124,8 @@ function Get-StigInventory {
         if ($getEsxi -or $getVm) {
             try {
                 Write-Verbose "Connecting to PowerCLI for $vCenterFQDN to enumerate Hosts/VMs..."
-                Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false -Scope Session | Out-Null
-                Connect-VIServer -Server $vCenterFQDN -User $adminUser -Password $adminPass -Force -ErrorAction Stop | Out-Null
+                Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -InvalidCertificateAction Ignore -Confirm:$false -Scope User | Out-Null
+                $InventoryConnection = Connect-VIServer -Server $vCenterFQDN -User $adminUser -Password $adminPass -Force -ErrorAction Stop
                 
                 if ($getEsxi) {
                     $EsxiReportDir = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/ESXi"
@@ -159,7 +164,7 @@ function Get-StigInventory {
                     }
                 }
 
-                Disconnect-VIServer -Server $vCenterFQDN -Confirm:$false | Out-Null
+                Disconnect-VIServer -Server $InventoryConnection -Confirm:$false | Out-Null
             } catch {
                 Write-StigLog -Message "Failed to retrieve ESXi/VM inventory from ${vCenterFQDN}: $($_.Exception.Message)" -Severity ERROR -Source "Inventory"
             }
@@ -287,7 +292,7 @@ function Format-StigChecklist {
             $FolderType = switch ($TargetType) {
                 "VCSA" { "VCSA" }
                 "ESXi" { "ESXi" }
-                "VM"   { "VMs" }
+                "VM"   { "vm" }
             }
             $OutputCklDir = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/$FolderType"
             if (-not (Test-Path $OutputCklDir)) { New-Item -ItemType Directory -Path $OutputCklDir -Force | Out-Null }
@@ -323,10 +328,10 @@ function Format-StigChecklist {
                             $SshXml.Load($SshTempCkl)
 
                             foreach ($sshVuln in $SshXml.CHECKLIST.STIGS.iSTIG.VULN) {
-                                $vulnNumNode = $sshVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Vuln_Num" }
+                                $vulnNumNode = $sshVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Rule_Ver" }
                                 if ($vulnNumNode) {
                                     $vulnNum = $vulnNumNode.SelectSingleNode("ATTRIBUTE_DATA").InnerText
-                                    $xpath = "/CHECKLIST/STIGS/iSTIG/VULN[STIG_DATA/VULN_ATTRIBUTE='Vuln_Num' and STIG_DATA/ATTRIBUTE_DATA='$vulnNum']"
+                                    $xpath = "/CHECKLIST/STIGS/iSTIG/VULN[STIG_DATA/VULN_ATTRIBUTE='Rule_Ver' and STIG_DATA/ATTRIBUTE_DATA='$vulnNum']"
                                     $apiVulnNode = $ApiXml.SelectSingleNode($xpath)
 
                                     if ($apiVulnNode) {
@@ -366,7 +371,7 @@ function Format-StigChecklist {
 
                     $apiMergeCount = 0
                     foreach ($customVuln in $CustomXml.CHECKLIST.STIGS.iSTIG.VULN) {
-                        $customIdNode = $customVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Vuln_Num" }
+                        $customIdNode = $customVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Rule_Ver" }
                         if ($customIdNode) {
                             $customId = $customIdNode.SelectSingleNode("ATTRIBUTE_DATA").InnerText
                             $xpath = "/CHECKLIST/STIGS/iSTIG/VULN[STIG_DATA/VULN_ATTRIBUTE='Rule_Ver' and STIG_DATA/ATTRIBUTE_DATA='$customId']"
@@ -398,7 +403,7 @@ function Format-StigChecklist {
 
                     $sshMergeCount = 0
                     foreach ($customVuln in $CustomXml.CHECKLIST.STIGS.iSTIG.VULN) {
-                        $customIdNode = $customVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Vuln_Num" }
+                        $customIdNode = $customVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Rule_Ver" }
                         if ($customIdNode) {
                             $customId = $customIdNode.SelectSingleNode("ATTRIBUTE_DATA").InnerText
                             $xpath = "/CHECKLIST/STIGS/iSTIG/VULN[STIG_DATA/VULN_ATTRIBUTE='Rule_Ver' and STIG_DATA/ATTRIBUTE_DATA='$customId']"
@@ -458,7 +463,7 @@ function Format-StigChecklist {
     Loads configuration settings and filters enabled FQDNs.
 #>
 function Get-ActiveTargets {
-    param([string]$OverlayRoot)
+    param([string]$OverlayRoot = $Script:OverlayRoot)
     $GlobalConfPath = Join-Path $OverlayRoot "conf/global_config.yml"
     if (-not (Test-Path $GlobalConfPath)) { Throw "Global configuration not found at $GlobalConfPath" }
     $GlobalConf = Get-Content $GlobalConfPath -Raw | ConvertFrom-Yaml
@@ -475,144 +480,6 @@ function Get-ActiveTargets {
         }
     }
     return $ActiveList
-}
-
-# =========================================================================
-# ORCHESTRATOR 1: MULTI-VCSA INDEPENDENT SERVICE RUNNER
-# =========================================================================
-function Invoke-MultiVcsaOrchestration {
-    [CmdletBinding()]
-    param (
-        [string]$OverlayRoot = "/usr/share/stigs/orchestration_overlay",
-        [switch]$Silent
-    )
-
-    $StartTime = Get-Date
-    Initialize-StigLogging -LogDirectory (Join-Path $OverlayRoot "logs") -Silent:$Silent
-    Write-StigLog -Message "Starting Multi-VCSA Dedicated STIG Audits..." -Severity INFO -Source "VcsaOrch"
-
-    try {
-        $ActiveTargets = Get-ActiveTargets -OverlayRoot $OverlayRoot
-        if ($ActiveTargets.Count -eq 0) { return }
-
-        # Optimization: Only query VCSA asset manifest
-        $MasterInventory = Get-StigInventory -OverlayRoot $OverlayRoot -TargetType 'VCSA'
-        $DateStr = Get-Date -Format "yyyyMMdd"
-
-        foreach ($vCenterFQDN in $ActiveTargets) {
-            $vCenterShortName = ($vCenterFQDN -split '\.')[0].ToUpper()
-            $VcsaTargets = $MasterInventory.vCenters | Where-Object { $_.FQDN -eq $vCenterFQDN }
-            
-            if ($VcsaTargets) {
-                Write-StigLog -Message "[$vCenterShortName] SECTION 1: Initiating VCSA Scan..." -Severity INFO -Source "VcsaOrch"
-                $VcsaManifest = [PSCustomObject]@{ vCenters = @($VcsaTargets); ESXiHosts = $null; VMs = $null }
-                
-                Invoke-StigAudit -TargetManifest $VcsaManifest -OverlayRoot $OverlayRoot
-                
-                $VcsaReportPath = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/VCSA"
-                $VcsaAnswersXml = Join-Path $OverlayRoot "conf/vcsa/answers.xml"
-                Get-StigScanSummary -ReportDir $VcsaReportPath -AnswersXmlPath $VcsaAnswersXml
-
-                Invoke-StigManSync -vCenterShortName $vCenterShortName -SectionReportDir $VcsaReportPath -OverlayRoot $OverlayRoot
-            }
-        }
-        Write-ElapsedTime -StartTime $StartTime -Message "Multi-VCSA Auditing Cycle Complete." -Source "VcsaOrch"
-    }
-    catch {
-        Write-StigLog -Message "VCSA Orchestrator Failed: $($_.Exception.Message)" -Severity ERROR -Source "VcsaOrch"
-    }
-}
-
-# =========================================================================
-# ORCHESTRATOR 2: MULTI-ESXI INDEPENDENT SERVICE RUNNER
-# =========================================================================
-function Invoke-MultiEsxiOrchestration {
-    [CmdletBinding()]
-    param (
-        [string]$OverlayRoot = "/usr/share/stigs/orchestration_overlay",
-        [switch]$Silent
-    )
-
-    $StartTime = Get-Date
-    Initialize-StigLogging -LogDirectory (Join-Path $OverlayRoot "logs") -Silent:$Silent
-    Write-StigLog -Message "Starting Multi-ESXi Dedicated STIG Audits..." -Severity INFO -Source "EsxiOrch"
-
-    try {
-        $ActiveTargets = Get-ActiveTargets -OverlayRoot $OverlayRoot
-        if ($ActiveTargets.Count -eq 0) { return }
-
-        # Optimization: Only query ESXi asset manifest (No heavy VM discovery)
-        $MasterInventory = Get-StigInventory -OverlayRoot $OverlayRoot -TargetType 'ESXi'
-        $DateStr = Get-Date -Format "yyyyMMdd"
-
-        foreach ($vCenterFQDN in $ActiveTargets) {
-            $vCenterShortName = ($vCenterFQDN -split '\.')[0].ToUpper()
-            $EsxiTargets = $MasterInventory.ESXiHosts | Where-Object { $_.vCenter -eq $vCenterFQDN }
-            
-            if ($EsxiTargets -and $EsxiTargets.Count -gt 0) {
-                Write-StigLog -Message "[$vCenterShortName] SECTION 2: Initiating ESXi Scan..." -Severity INFO -Source "EsxiOrch"
-                $EsxiManifest = [PSCustomObject]@{ vCenters = $null; ESXiHosts = $EsxiTargets; VMs = $null }
-                
-                Invoke-StigAudit -TargetManifest $EsxiManifest -OverlayRoot $OverlayRoot
-                
-                $EsxiReportPath = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/ESXi"
-                $EsxiAnswersXml = Join-Path $OverlayRoot "conf/esxi/answers.xml"
-                Get-StigScanSummary -ReportDir $EsxiReportPath -AnswersXmlPath $EsxiAnswersXml
-
-                Invoke-StigManSync -vCenterShortName $vCenterShortName -SectionReportDir $EsxiReportPath -OverlayRoot $OverlayRoot
-            }
-        }
-        Write-ElapsedTime -StartTime $StartTime -Message "Multi-ESXi Auditing Cycle Complete." -Source "EsxiOrch"
-    }
-    catch {
-        Write-StigLog -Message "ESXi Orchestrator Failed: $($_.Exception.Message)" -Severity ERROR -Source "EsxiOrch"
-    }
-}
-
-# =========================================================================
-# ORCHESTRATOR 3: MULTI-VM INDEPENDENT SERVICE RUNNER
-# =========================================================================
-function Invoke-MultiVmOrchestration {
-    [CmdletBinding()]
-    param (
-        [string]$OverlayRoot = "/usr/share/stigs/orchestration_overlay",
-        [switch]$Silent
-    )
-
-    $StartTime = Get-Date
-    Initialize-StigLogging -LogDirectory (Join-Path $OverlayRoot "logs") -Silent:$Silent
-    Write-StigLog -Message "Starting Multi-VM Dedicated STIG Audits..." -Severity INFO -Source "VmOrch"
-
-    try {
-        $ActiveTargets = Get-ActiveTargets -OverlayRoot $OverlayRoot
-        if ($ActiveTargets.Count -eq 0) { return }
-
-        # Optimization: Only query VM asset manifest
-        $MasterInventory = Get-StigInventory -OverlayRoot $OverlayRoot -TargetType 'VM'
-        $DateStr = Get-Date -Format "yyyyMMdd"
-
-        foreach ($vCenterFQDN in $ActiveTargets) {
-            $vCenterShortName = ($vCenterFQDN -split '\.')[0].ToUpper()
-            $VmTargets = $MasterInventory.VMs | Where-Object { $_.vCenter -eq $vCenterFQDN }
-            
-            if ($VmTargets -and $VmTargets.Count -gt 0) {
-                Write-StigLog -Message "[$vCenterShortName] SECTION 3: Initiating VM Scan..." -Severity INFO -Source "VmOrch"
-                $VmManifest = [PSCustomObject]@{ vCenters = $null; ESXiHosts = $null; VMs = $VmTargets }
-                
-                Invoke-StigAudit -TargetManifest $VmManifest -OverlayRoot $OverlayRoot
-                
-                $VmReportPath = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/VMs"
-                $VmAnswersXml = Join-Path $OverlayRoot "conf/vm/answers.xml"
-                Get-StigScanSummary -ReportDir $VmReportPath -AnswersXmlPath $VmAnswersXml
-
-                Invoke-StigManSync -vCenterShortName $vCenterShortName -SectionReportDir $VmReportPath -OverlayRoot $OverlayRoot
-            }
-        }
-        Write-ElapsedTime -StartTime $StartTime -Message "Multi-VM Auditing Cycle Complete." -Source "VmOrch"
-    }
-    catch {
-        Write-StigLog -Message "VM Orchestrator Failed: $($_.Exception.Message)" -Severity ERROR -Source "VmOrch"
-    }
 }
 
 Export-ModuleMember -Function Get-StigInventory, Invoke-StigAudit, Format-StigChecklist, Invoke-MultiVcsaOrchestration, Invoke-MultiEsxiOrchestration, Invoke-MultiVmOrchestration
