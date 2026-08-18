@@ -76,7 +76,7 @@ Change the "VLAN Type" to "VLAN" and change the "VLAN ID" to a network allocated
           unless stdpgs.empty?
             describe 'Checking standand port group VLAN ID' do
               subject { stdpgs }
-		it { should be_in input('vMotionVlanId').to_s.split(',').map(&:strip) }
+		          it { should be_in input('vMotionVlanId').to_s.split(',').map(&:strip) }
             end
           end
           describe 'SA Interview' do

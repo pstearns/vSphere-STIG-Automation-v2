@@ -222,11 +222,21 @@ function VMCH-80-000209 {
     $Title  = "Virtual machines (VMs) must remove unneeded floppy devices."
     Write-RemediationLog -Message "[$($VM.Name)] Remediating STIG: $STIGID - $Title" -Severity "INFO"
     
-    $Floppy = $VM.ExtensionData.Config.Hardware.Device | Where-Object { $_.DeviceInfo.Label -match "floppy" }
-    if ($Floppy) {
-        Write-RemediationLog -Message "[$($VM.Name)] Floppy device exists. Must be manually detached or removed." -Severity "WARN"
+    # 1. Check for the floppy drive using PowerCLI
+    $FloppyDrive = $VM | Get-FloppyDrive -ErrorAction SilentlyContinue
+    
+    if ($FloppyDrive) {
+        Write-RemediationLog -Message "[$($VM.Name)] Active virtual floppy drive found. Removing device..." -Severity "WARN"
+        try {
+            # 2. Automatically remove the device from the VM configuration
+            $FloppyDrive | Remove-FloppyDrive -Confirm:$false -ErrorAction Stop | Out-Null
+            Write-RemediationLog -Message "[$($VM.Name)] Floppy drive successfully removed." -Severity "SUCCESS"
+        }
+        catch {
+            Write-RemediationLog -Message "[$($VM.Name)] Failed to remove floppy drive automatically: $_" -Severity "ERROR"
+        }
     } else {
-        Write-RemediationLog -Message "[$($VM.Name)] Floppy device is not present." -Severity "SUCCESS"
+        Write-RemediationLog -Message "[$($VM.Name)] No floppy devices present. Compliant." -Severity "SUCCESS"
     }
 }
 
@@ -653,9 +663,4 @@ function VMCH-80-000207 {
 }
 
 # Export Functions to module space
-Export-ModuleMember -Function Set-VmAdvancedSetting, `
-                      VMCH-80-000189, VMCH-80-000191, VMCH-80-000192, VMCH-80-000193, VMCH-80-000194, `
-                      VMCH-80-000195, VMCH-80-000196, VMCH-80-000197, VMCH-80-000198, VMCH-80-000199, `
-                      VMCH-80-000200, VMCH-80-000201, VMCH-80-000202, VMCH-80-000203, VMCH-80-000204, `
-                      VMCH-80-000205, VMCH-80-000206, VMCH-80-000207, VMCH-80-000208, VMCH-80-000209, `
-                      VMCH-80-000210, VMCH-80-000211, VMCH-80-000212, VMCH-80-000213, VMCH-80-000214
+Export-ModuleMember -Function VMCH-80-*, Set-VmAdvancedSetting
