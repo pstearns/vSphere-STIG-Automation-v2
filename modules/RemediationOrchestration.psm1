@@ -3,6 +3,7 @@
 # DESCRIPTION: Enterprise STIG Remediation & Parallel Verification Engine
 #              Supports VM, ESXi, and VCSA as pluggable microservices.
 #              Automatically crawls date folders backward per vCenter.
+#              Thread-safe: Creates isolated staging sandboxes per runspace.
 # =========================================================================
 
 if (Test-Path "/usr/share/stigs/orchestration_overlay") {
@@ -116,6 +117,24 @@ function Invoke-StigRemediation {
             $CredObj = Get-vCenterCredential -FQDN $vCenterFQDN -FilePath $CredentialFile
             $AdminUser = $CredObj.AdminCred.UserName
             $AdminPass = $CredObj.AdminCred.GetNetworkCredential().Password
+            $RootPass  = $CredObj.RootCred.GetNetworkCredential().Password
+
+            # --- DYNAMIC CONFIG-DRIVEN STIG MANAGER COLLECTION RESOLUTION ---
+            $CollectionId = "16" # Global Fallback Default
+            $GlobalConfPath = Join-Path $OverlayRoot "conf/global_config.yml"
+            if (Test-Path $GlobalConfPath) {
+                $GlobalConf = Get-Content $GlobalConfPath -Raw | ConvertFrom-Yaml
+                $StigManConf = $GlobalConf.stigman_integration
+                if ($null -ne $StigManConf -and $StigManConf.enabled -eq $true) {
+                    if ($StigManConf.collection_mappings -and $StigManConf.collection_mappings.$vCenterShortName) {
+                        $CollectionId = $StigManConf.collection_mappings.$vCenterShortName
+                        Write-StigLog "[$vCenterShortName] Resolved Collection ID mapping: $CollectionId" -Severity INFO -Source "Orchestrator"
+                    } elseif ($StigManConf.collection_id) {
+                        $CollectionId = $StigManConf.collection_id
+                        Write-StigLog "[$vCenterShortName] Resolved global Collection fallback mapping: $CollectionId" -Severity INFO -Source "Orchestrator"
+                    }
+                }
+            }
 
             $CklFiles = Get-ChildItem -Path $ReportPath -Filter "*.ckl"
             if (-not [string]::IsNullOrWhiteSpace($TargetName)) {
@@ -130,6 +149,11 @@ function Invoke-StigRemediation {
             Write-StigLog "[$vCenterShortName] Establishing parent session for [$AssetType] remediation using resolved date [$ResolvedDate]..." -Severity INFO -Source "Orchestrator"
             Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -InvalidCertificateAction Ignore -ParticipateInCEIP $false -Confirm:$false -Scope Session | Out-Null
             $ParentConnection = Connect-VIServer -Server $vCenterFQDN -User $AdminUser -Password $AdminPass -Force -ErrorAction Stop
+
+            # --- DYNAMIC ASSET INITIALIZATION HOOK (Runs once per vCenter) ---
+            if (Get-Command Initialize-AssetProvider -ErrorAction SilentlyContinue) {
+                Initialize-AssetProvider -AssetObject $vCenterFQDN -Config $AssetConfig -Creds $CredObj
+            }
 
             $RemediatedQueue = @()
 
@@ -186,12 +210,12 @@ function Invoke-StigRemediation {
                             })
                         }
                     }
-
                     if ($SuccessFixes.Count -gt 0 -or $HasWaiverChanges) {
                         $RemediatedQueue += [PSCustomObject]@{
                             File           = $File.FullName
                             AssetName      = $TargetAssetName
                             VcenterObjName = $AssetObject.Name
+                            vCenterFQDN    = $vCenterFQDN  # Adds the FQDN parameter to the InSpec verification job
                             FixedRules     = $SuccessFixes
                             XmlDoc         = $XmlCkl
                         }
@@ -199,37 +223,23 @@ function Invoke-StigRemediation {
                 }
             }
 
-            Disconnect-VIServer -Server $ParentConnection -Confirm:$false | Out-Null
-
-            # --- PHASE 2: PARALLEL VERIFICATION & UPLOAD (BATCH OF 40) ---
+            # --- PHASE 2: VERIFICATION & REAL-TIME STREAMING SYNC ---
             if ($RemediatedQueue.Count -gt 0) {
                 $TotalQueue = $RemediatedQueue.Count
-                $BatchSize  = 40
-                Write-StigLog "[$vCenterShortName] Initiating parallel verification for $TotalQueue [$AssetType] assets..." -Severity INFO -Source "Orchestrator"
 
-                for ($i = 0; $i -lt $TotalQueue; $i += $BatchSize) {
-                    $Batch = $RemediatedQueue | Select-Object -Skip $i -First $BatchSize
-                    
-                    $Batch | ForEach-Object -Parallel {
-                        $Job = $_
-                        $OverlayRoot      = $using:OverlayRoot
-                        $vCenterFQDN      = $using:vCenterFQDN
-                        $AdminUser        = $using:AdminUser
-                        $AdminPass        = $using:AdminPass
-                        $AssetType        = $using:AssetType
-                        $AssetConfig      = $using:AssetConfig
-                        $vCenterShortName = $using:vCenterShortName
-                        $ProviderPath     = $using:ProviderPath # Pass Provider to Sub-Runspace
+                if ($AssetType -eq "VCSA") {
+                    # =========================================================================
+                    # SEQUENTIAL ROUTING: Runs sequentially to avoid hitting single-node SSH rate limits
+                    # =========================================================================
+                    Write-StigLog "[$vCenterShortName] Initiating sequential verification & real-time watcher synchronization for $TotalQueue [VCSA] assets..." -Severity INFO -Source "Orchestrator"
 
-                        # Initialize verification runspace
-                        $GlobalFuncsPath = Join-Path $OverlayRoot "modules/globalFunctions.psm1"
-                        Invoke-Expression ((Get-Content $GlobalFuncsPath -Raw) -replace '(?s)Export-ModuleMember.*', '')
+                    foreach ($Job in $RemediatedQueue) {
+                        # --- Thread-Safe Sandboxing ---
+                        $UniqueId = [System.IO.Path]::GetFileNameWithoutExtension($Job.File)
+                        $StagingDir = "/tmp/remediation_staging/$($UniqueId.ToLower())"
+                        $FixedRulesArray = @($Job.FixedRules)
 
-                        # Dynamically import the Asset Provider within the local thread context
-                        Import-Module $ProviderPath -Force -DisableNameChecking
-
-                        $StagingDir = "/tmp/remediation_staging/$($Job.AssetName)"
-                        if ($Job.FixedRules.Count -gt 0) {
+                        if ($FixedRulesArray.Count -gt 0) {
                             if (-not (Test-Path $StagingDir)) { New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null }
                             $DeltaJson = Join-Path $StagingDir "delta_verify.json"
                             $DeltaCkl  = Join-Path $StagingDir "delta_verify.ckl"
@@ -242,52 +252,55 @@ function Invoke-StigRemediation {
                             $ProcessInfo.Arguments = "-c `"cinc-auditor $ArgTrail 2>&1`""
                             $ProcessInfo.UseShellExecute = $false
                             $ProcessInfo.RedirectStandardOutput = $true
+                            
                             $ProcessInfo.EnvironmentVariables["VISERVER"]          = $vCenterFQDN
                             $ProcessInfo.EnvironmentVariables["VISERVER_USERNAME"] = $AdminUser
                             $ProcessInfo.EnvironmentVariables["VISERVER_PASSWORD"] = $AdminPass
+                            $ProcessInfo.EnvironmentVariables["VCSA_ROOT_PASSWORD"] = $RootPass
 
                             $Process = [System.Diagnostics.Process]::Start($ProcessInfo)
                             $VerifyOutput = $Process.StandardOutput.ReadToEnd()
                             $Process.WaitForExit()
 
-                            # Diagnostic Logging Output for cinc-auditor failures
                             if (-not (Test-Path $DeltaJson)) {
                                 [Console]::WriteLine("[$($Job.AssetName)] ERROR: cinc-auditor did not generate delta report!")
-                                [Console]::WriteLine("[$($Job.AssetName)] Raw Process Output:`n$VerifyOutput")
                             }
 
                             if (Test-Path $DeltaJson) {
                                 bash -c "saf convert hdf2ckl -i '$DeltaJson' -o '$DeltaCkl'" | Out-Null
                                 if (Test-Path $DeltaCkl) {
                                     
-                                    # --- RESTORED XML MERGING LOOP (LOCAL RUNSPACE SAFE) ---
                                     $DeltaXml = New-Object System.Xml.XmlDocument
                                     $DeltaXml.Load($DeltaCkl)
                                     $XmlCkl = $Job.XmlDoc
                                     $AnswersXml = $AssetConfig.AnswersXml
 
-                                    foreach ($FixedVuln in $DeltaXml.CHECKLIST.STIGS.iSTIG.VULN) {
+                                    # Dynamically resolve STIG ID from Checklist Metadata as Module Name
+                                    $StigIdNode = $XmlCkl.SelectSingleNode("//SI_DATA[SID_NAME='stigid']/SID_DATA")
+                                    $ModuleName = if ($null -ne $StigIdNode -and -not [string]::IsNullOrWhiteSpace($StigIdNode.InnerText)) {
+                                        $StigIdNode.InnerText
+                                    } else {
+                                        "VMW_vSphere_8.0_${AssetType}_STIG"
+                                    }
+
+                                    # Safe XPath Selection prevents unrolling
+                                    $FixedVulns = $DeltaXml.SelectNodes("/CHECKLIST/STIGS/iSTIG/VULN")
+                                    foreach ($FixedVuln in $FixedVulns) {
                                         $FixedRuleVer = ($FixedVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Rule_Ver" }).SelectSingleNode("ATTRIBUTE_DATA").InnerText
                                         $FixedRuleID  = ($FixedVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Rule_ID" }).SelectSingleNode("ATTRIBUTE_DATA").InnerText
                                         
                                         $vulnSTATUS   = $FixedVuln.SelectSingleNode("STATUS").InnerText
                                         $vulnFindDet  = $FixedVuln.SelectSingleNode("FINDING_DETAILS").InnerXml
                                         
-                                        $StatusString = if ($vulnSTATUS -eq "NotAFinding") { "NOT A FINDING" } else { "OPEN" }
-                                        $DateString = (Get-Date).ToString("MM/dd/yyyy")
-                                        
-                                        # Corrected Line Spacing Definition
-                                        $StandardHeader = "Inspec Profile: VMW_vSphere_8.0_Virtual_Machine_STIG found this to be $StatusString on ${DateString}:`r`n------------------------------------------------------------------------`r`n"
-                                        
+                                        # Leverage global Format-FindingDetail for header generation
                                         $finalFindingDetails = if ($vulnFindDet -like "Inspec Profile:*") {
                                             $vulnFindDet
                                         } else {
-                                            $StandardHeader + $vulnFindDet
+                                            (Format-FindingDetail -Status $vulnSTATUS -FindingDetails $vulnFindDet -ModuleName $ModuleName).FindingDetails
                                         }
                                         
                                         $finalComments = ""
 
-                                        # Apply Answer File overrides
                                         if ((Test-Path $AnswersXml) -and $FixedRuleVer) {
                                             $AnswerData = Get-FormattedAnswer -AnswerFile $AnswersXml -vulnRuleVer $FixedRuleVer -CurrentStatus $vulnSTATUS -FindingDetailsText $vulnFindDet -AnswerKey "DEFAULT"
                                             if ($null -ne $AnswerData -and $AnswerData.Status -ne "") {
@@ -296,7 +309,6 @@ function Invoke-StigRemediation {
                                             }
                                         }
 
-                                        # Update Master Checklist Node
                                         $MasterNode = $null
                                         if ($FixedRuleVer) {
                                             $MasterNode = $XmlCkl.SelectSingleNode("/CHECKLIST/STIGS/iSTIG/VULN[STIG_DATA[VULN_ATTRIBUTE='Rule_Ver' and ATTRIBUTE_DATA='$FixedRuleVer']]")
@@ -320,26 +332,175 @@ function Invoke-StigRemediation {
                             Remove-Item $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
                         }
 
-                        # Real-Time STIG Manager Synchronization
-                        $MutexName = "StigManWatcherMutex"
-                        $Mutex = New-Object System.Threading.Mutex($false, $MutexName)
-                        [void]$Mutex.WaitOne()
-                        try {
-                            $InboxDir = Join-Path $OverlayRoot "stigman-watcher/inboxes/coll_6"
-                            $RemediatedFileName = (Split-Path $Job.File -Leaf) -replace '\.ckl$', "_Remediated_$((Get-Date).ToString('HHmmss')).ckl"
-                            $StagedPath = Join-Path $InboxDir $RemediatedFileName
-                            Copy-Item -Path $Job.File -Destination $StagedPath -Force | Out-Null
-                            
-                            $WatcherScript = Join-Path $OverlayRoot "bin/run-stigman-watcher.sh"
-                            $UploadOutput = bash -c "bash '$WatcherScript' '6'" 2>&1
-                        }
-                        finally {
-                            $Mutex.ReleaseMutex()
-                            $Mutex.Dispose()
-                        }
-                    } -ThrottleLimit 40
+                        # --- STIG Manager Watcher Real-Time Streaming ---
+                        # In sequential flow, no parallel Mutexes or blocks are required
+                        $InboxDir = Join-Path $OverlayRoot "stigman-watcher/inboxes/coll_$CollectionId"
+                        if (-not (Test-Path $InboxDir)) { New-Item -ItemType Directory -Path $InboxDir -Force | Out-Null }
+                        
+                        $RemediatedFileName = (Split-Path $Job.File -Leaf) -replace '\.ckl$', "_Remediated_$((Get-Date).ToString('HHmmss')).ckl"
+                        $StagedPath = Join-Path $InboxDir $RemediatedFileName
+                        Copy-Item -Path $Job.File -Destination $StagedPath -Force | Out-Null
+                        
+                        $WatcherScript = Join-Path $OverlayRoot "bin/run-stigman-watcher.sh"
+                        $UploadOutput = bash -c "bash '$WatcherScript' '$CollectionId'" 2>&1
+                    }
+                } else {
+                    # =========================================================================
+                    # PARALLEL ROUTING: Runs parallel verification (ESXi and VM assets)
+                    # =========================================================================
+                    $BatchSize  = 40
+                    Write-StigLog "[$vCenterShortName] Initiating parallel verification & real-time watcher synchronization for $TotalQueue [$AssetType] assets..." -Severity INFO -Source "Orchestrator"
+
+                    for ($i = 0; $i -lt $TotalQueue; $i += $BatchSize) {
+                        $Batch = $RemediatedQueue | Select-Object -Skip $i -First $BatchSize
+                        
+                        $Batch | ForEach-Object -Parallel {
+                            $Job = $_
+                            $OverlayRoot      = $using:OverlayRoot
+                            $vCenterFQDN      = $using:vCenterFQDN
+                            $AdminUser        = $using:AdminUser
+                            $AdminPass        = $using:AdminPass
+                            $RootPass         = $using:RootPass
+                            $AssetType        = $using:AssetType
+                            $AssetConfig      = $using:AssetConfig
+                            $vCenterShortName = $using:vCenterShortName
+                            $ProviderPath     = $using:ProviderPath 
+                            $CollectionId     = $using:CollectionId
+
+                            # Initialize verification runspace
+                            $GlobalFuncsPath = Join-Path $OverlayRoot "modules/globalFunctions.psm1"
+                            Invoke-Expression ((Get-Content $GlobalFuncsPath -Raw) -replace '(?s)Export-ModuleMember.*', '')
+
+                            Import-Module $ProviderPath -Force -DisableNameChecking
+
+                            # --- Thread-Safe Sandboxing ---
+                            $UniqueId = [System.IO.Path]::GetFileNameWithoutExtension($Job.File)
+                            $StagingDir = "/tmp/remediation_staging/$($UniqueId.ToLower())"
+
+                            $FixedRulesArray = @($Job.FixedRules)
+
+                            if ($FixedRulesArray.Count -gt 0) {
+                                if (-not (Test-Path $StagingDir)) { New-Item -ItemType Directory -Path $StagingDir -Force | Out-Null }
+                                $DeltaJson = Join-Path $StagingDir "delta_verify.json"
+                                $DeltaCkl  = Join-Path $StagingDir "delta_verify.ckl"
+
+                                # Dynamic Provider-based Verification Runner (Cinc-Auditor)
+                                $ArgTrail = Get-AssetVerificationArgs -Job $Job -Config $AssetConfig -DeltaJson $DeltaJson
+                                
+                                $ProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
+                                $ProcessInfo.FileName = "bash"
+                                $ProcessInfo.Arguments = "-c `"cinc-auditor $ArgTrail 2>&1`""
+                                $ProcessInfo.UseShellExecute = $false
+                                $ProcessInfo.RedirectStandardOutput = $true
+                                
+                                $ProcessInfo.EnvironmentVariables["VISERVER"]          = $vCenterFQDN
+                                $ProcessInfo.EnvironmentVariables["VISERVER_USERNAME"] = $AdminUser
+                                $ProcessInfo.EnvironmentVariables["VISERVER_PASSWORD"] = $AdminPass
+                                $ProcessInfo.EnvironmentVariables["VCSA_ROOT_PASSWORD"] = $RootPass
+
+                                $Process = [System.Diagnostics.Process]::Start($ProcessInfo)
+                                $VerifyOutput = $Process.StandardOutput.ReadToEnd()
+                                $Process.WaitForExit()
+
+                                if (-not (Test-Path $DeltaJson)) {
+                                    [Console]::WriteLine("[$($Job.AssetName)] ERROR: cinc-auditor did not generate delta report!")
+                                }
+
+                                if (Test-Path $DeltaJson) {
+                                    bash -c "saf convert hdf2ckl -i '$DeltaJson' -o '$DeltaCkl'" | Out-Null
+                                    if (Test-Path $DeltaCkl) {
+                                        
+                                        $DeltaXml = New-Object System.Xml.XmlDocument
+                                        $DeltaXml.Load($DeltaCkl)
+                                        $XmlCkl = $Job.XmlDoc
+                                        $AnswersXml = $AssetConfig.AnswersXml
+
+                                        # Dynamically resolve STIG ID from Checklist Metadata as Module Name
+                                        $StigIdNode = $XmlCkl.SelectSingleNode("//SI_DATA[SID_NAME='stigid']/SID_DATA")
+                                        $ModuleName = if ($null -ne $StigIdNode -and -not [string]::IsNullOrWhiteSpace($StigIdNode.InnerText)) {
+                                            $StigIdNode.InnerText
+                                        } else {
+                                            "VMW_vSphere_8.0_${AssetType}_STIG"
+                                        }
+
+                                        $FixedVulns = $DeltaXml.SelectNodes("/CHECKLIST/STIGS/iSTIG/VULN")
+                                        foreach ($FixedVuln in $FixedVulns) {
+                                            $FixedRuleVer = ($FixedVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Rule_Ver" }).SelectSingleNode("ATTRIBUTE_DATA").InnerText
+                                            $FixedRuleID  = ($FixedVuln.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Rule_ID" }).SelectSingleNode("ATTRIBUTE_DATA").InnerText
+                                            
+                                            $vulnSTATUS   = $FixedVuln.SelectSingleNode("STATUS").InnerText
+                                            $vulnFindDet  = $FixedVuln.SelectSingleNode("FINDING_DETAILS").InnerXml
+                                            
+                                            # Leverage global Format-FindingDetail for header generation
+                                            $finalFindingDetails = if ($vulnFindDet -like "Inspec Profile:*") {
+                                                $vulnFindDet
+                                            } else {
+                                                (Format-FindingDetail -Status $vulnSTATUS -FindingDetails $vulnFindDet -ModuleName $ModuleName).FindingDetails
+                                            }
+                                            
+                                            $finalComments = ""
+
+                                            if ((Test-Path $AnswersXml) -and $FixedRuleVer) {
+                                                $AnswerData = Get-FormattedAnswer -AnswerFile $AnswersXml -vulnRuleVer $FixedRuleVer -CurrentStatus $vulnSTATUS -FindingDetailsText $vulnFindDet -AnswerKey "DEFAULT"
+                                                if ($null -ne $AnswerData -and $AnswerData.Status -ne "") {
+                                                    $vulnSTATUS    = $AnswerData.Status
+                                                    $finalComments = $AnswerData.Comments
+                                                }
+                                            }
+
+                                            $MasterNode = $null
+                                            if ($FixedRuleVer) {
+                                                $MasterNode = $XmlCkl.SelectSingleNode("/CHECKLIST/STIGS/iSTIG/VULN[STIG_DATA[VULN_ATTRIBUTE='Rule_Ver' and ATTRIBUTE_DATA='$FixedRuleVer']]")
+                                            }
+                                            if (-not $MasterNode -and $FixedRuleID) {
+                                                $MasterNode = $XmlCkl.SelectSingleNode("/CHECKLIST/STIGS/iSTIG/VULN[STIG_DATA[VULN_ATTRIBUTE='Rule_ID' and ATTRIBUTE_DATA='$FixedRuleID']]")
+                                            }
+
+                                            if ($MasterNode) {
+                                                $MasterNode.SelectSingleNode("STATUS").InnerText          = $vulnSTATUS
+                                                $MasterNode.SelectSingleNode("FINDING_DETAILS").InnerXml  = $finalFindingDetails
+                                                $MasterNode.SelectSingleNode("COMMENTS").InnerXml         = $finalComments
+                                                [Console]::WriteLine("[$($Job.AssetName)] -> Updated Checklist: $FixedRuleVer -> Status: $vulnSTATUS")
+                                            }
+                                        }
+
+                                        $XmlCkl.Save($Job.File)
+                                        [Console]::WriteLine("[$($Job.AssetName)] Delta verification successfully merged.")
+                                    }
+                                }
+                                Remove-Item $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
+                            }
+
+                            # --- STIG Manager Watcher Real-Time Streaming ---
+                            $MutexName = "StigManWatcherMutex"
+                            $Mutex = New-Object System.Threading.Mutex($false, $MutexName)
+                            [void]$Mutex.WaitOne()
+                            try {
+                                $InboxDir = Join-Path $OverlayRoot "stigman-watcher/inboxes/coll_$CollectionId"
+                                if (-not (Test-Path $InboxDir)) { New-Item -ItemType Directory -Path $InboxDir -Force | Out-Null }
+                                
+                                $RemediatedFileName = (Split-Path $Job.File -Leaf) -replace '\.ckl$', "_Remediated_$((Get-Date).ToString('HHmmss')).ckl"
+                                $StagedPath = Join-Path $InboxDir $RemediatedFileName
+                                Copy-Item -Path $Job.File -Destination $StagedPath -Force | Out-Null
+                                
+                                $WatcherScript = Join-Path $OverlayRoot "bin/run-stigman-watcher.sh"
+                                $UploadOutput = bash -c "bash '$WatcherScript' '$CollectionId'" 2>&1
+                            }
+                            finally {
+                                $Mutex.ReleaseMutex()
+                                $Mutex.Dispose()
+                            }
+                        } -ThrottleLimit 40
+                    }
                 }
             }
+
+            # --- DYNAMIC ASSET FINALIZATION HOOK (Runs ONLY after verification completes) ---
+            if (Get-Command Finalize-AssetProvider -ErrorAction SilentlyContinue) {
+                Finalize-AssetProvider -AssetObject $vCenterFQDN -Config $AssetConfig -Creds $CredObj
+            }
+
+            Disconnect-VIServer -Server $ParentConnection -Confirm:$false | Out-Null
         }
 
         # Step 5: Append Remediation History Log
