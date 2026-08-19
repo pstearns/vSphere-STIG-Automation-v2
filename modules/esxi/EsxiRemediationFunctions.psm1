@@ -4,11 +4,6 @@
 #              Optimized to dynamically bind unified YAML input blocks.
 # =========================================================================
 
-# Logging Proxies
-Function Write-ToConsole ($Details) { Write-StigLog -Message $Details -Severity INFO -Source "Remediation" }
-Function Write-ToConsoleGreen ($Details) { Write-StigLog -Message $Details -Severity SUCCESS -Source "Remediation" }
-Function Write-ToConsoleYellow ($Details) { Write-StigLog -Message $Details -Severity WARN -Source "Remediation" }
-Function Write-ToConsoleRed ($Details) { Write-StigLog -Message $Details -Severity ERROR -Source "Remediation" }
 
 <#
 .SYNOPSIS
@@ -48,19 +43,19 @@ Function Get-StigValue {
 Function AdvancedSettingSTIG ($vmhost, $settingName, $value) {
     if ([string]::IsNullOrWhiteSpace($settingName)) { return }
     if ($null -eq $value -or [string]$value -eq "") {
-        Write-ToConsoleYellow "Warning: Value for '$settingName' is blank. Skipping."
+        Write-StigLog -Message "Warning: Value for '$settingName' is blank. Skipping." -Severity INFO -Source "EsxiRemediation"
         return
     }
 
     if ($asetting = Get-AdvancedSetting -Entity $vmhost -Name $settingName -ErrorAction SilentlyContinue) {
         if ([string]$asetting.value -eq [string]$value) {
-            Write-ToConsoleGreen "...Setting '$settingName' is already configured correctly to '$value' on $($vmhost.name)"
+            Write-StigLog -Message "...Setting '$settingName' is already configured correctly to '$value' on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
         } else {
-            Write-ToConsoleYellow "...Setting '$settingName' was incorrectly set to '$($asetting.value)' on $($vmhost.name)...setting to '$value'"
+            Write-StigLog -Message "...Setting '$settingName' was incorrectly set to '$($asetting.value)' on $($vmhost.name)...setting to '$value'" -Severity INFO -Source "EsxiRemediation"
             $asetting | Set-AdvancedSetting -Value $value -Confirm:$false | Out-Null
         }
     } else {
-        Write-ToConsoleYellow "...Setting '$settingName' does not exist on $($vmhost.name)...creating setting..."
+        Write-StigLog -Message "...Setting '$settingName' does not exist on $($vmhost.name)...creating setting..." -Severity INFO -Source "EsxiRemediation"
         New-AdvancedSetting -Entity $vmhost -Name $settingName -Value $value -Confirm:$false | Out-Null
     }
 }
@@ -242,9 +237,9 @@ Function ESXI-80-000014($vmhost, $stigsettings) {
     $esxcli = Get-EsxCli -VMHost $vmhost -V2 -ErrorAction Stop
     $results = $esxcli.system.security.fips140.ssh.get.invoke()
     if ($results.enable -eq "true" -or $results.enable -eq $true) {
-        Write-ToConsoleGreen "...FIPS140 for SSH is already enabled on $($vmhost.name)"
+        Write-StigLog -Message "...FIPS140 for SSH is already enabled on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Enabling FIPS140 for SSH on $($vmhost.name)..."
+        Write-StigLog -Message "...Enabling FIPS140 for SSH on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.security.fips140.ssh.set.CreateArgs()
         $arguments.enable = $true
         $esxcli.system.security.fips140.ssh.set.Invoke($arguments) | Out-Null
@@ -256,9 +251,9 @@ Function ESXI-80-000052($vmhost, $stigsettings) {
     $results = $esxcli.system.ssh.server.config.list.invoke() | Where-Object {$_.Key -eq 'ignorerhosts'} | Select-Object -ExpandProperty Value
     $targetValue = Get-StigValue $stigsettings "sshIgnorerhosts" "ssh_ignore_rhosts" "yes"
     if ($results -eq $targetValue) {
-        Write-ToConsoleGreen "...SSH ignorerhosts set correctly to $results on $($vmhost.name)"
+        Write-StigLog -Message "...SSH ignorerhosts set correctly to $results on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring SSH ignorerhosts to $targetValue on $($vmhost.name)"
+        Write-StigLog -Message "...Configuring SSH ignorerhosts to $targetValue on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.ssh.server.config.set.CreateArgs()
         $arguments.keyword = "ignorerhosts"
         $arguments.value = $targetValue
@@ -270,9 +265,9 @@ Function ESXI-80-000085($vmhost, $stigsettings) {
     $esxcli = Get-EsxCli -VMHost $vmhost -V2 -ErrorAction Stop
     $results = $esxcli.system.settings.encryption.get.invoke()
     if ($results.RequireSecureBoot -eq "true" -or $results.RequireSecureBoot -eq $true) {
-        Write-ToConsoleGreen "...Secure Boot required set correctly to true on $($vmhost.name)"
+        Write-StigLog -Message "...Secure Boot required set correctly to true on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring Secure Boot requirement on $($vmhost.name)"
+        Write-StigLog -Message "...Configuring Secure Boot requirement on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.settings.encryption.set.CreateArgs()
         $arguments.requiresecureboot = $true
         $esxcli.system.settings.encryption.set.Invoke($arguments) | Out-Null
@@ -283,9 +278,9 @@ Function ESXI-80-000133($vmhost, $stigsettings) {
     $esxcli = Get-EsxCli -VMHost $vmhost -V2 -ErrorAction Stop
     $results = $esxcli.software.acceptance.get.Invoke()
     if ($results -ne "CommunitySupported") {
-        Write-ToConsoleGreen "...VIB Acceptance level is set correctly to $results on $($vmhost.name)"
+        Write-StigLog -Message "...VIB Acceptance level is set correctly to $results on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring VIB Acceptance level back to PartnerSupported..."
+        Write-StigLog -Message "...Configuring VIB Acceptance level back to PartnerSupported..." -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.software.acceptance.set.CreateArgs()
         $arguments.level = "PartnerSupported"
         $esxcli.software.acceptance.set.Invoke($arguments) | Out-Null
@@ -297,9 +292,9 @@ Function ESXI-80-000187($vmhost, $stigsettings) {
     $results = $esxcli.system.ssh.server.config.list.invoke() | Where-Object {$_.Key -eq 'ciphers'} | Select-Object -ExpandProperty Value
     $targetValue = Get-StigValue $stigsettings "sshCiphers" "ssh_ciphers" "aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr"
     if ($results -eq $targetValue) {
-        Write-ToConsoleGreen "...SSH ciphers already set to $results on $($vmhost.name)"
+        Write-StigLog -Message "...SSH ciphers already set to $results on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring SSH ciphers on $($vmhost.name)..."
+        Write-StigLog -Message "...Configuring SSH ciphers on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.ssh.server.config.set.CreateArgs()
         $arguments.keyword = "ciphers"
         $arguments.value = $targetValue
@@ -312,9 +307,9 @@ Function ESXI-80-000192($vmhost, $stigsettings) {
     $results = $esxcli.system.ssh.server.config.list.invoke() | Where-Object {$_.Key -eq 'banner'} | Select-Object -ExpandProperty Value
     $targetValue = Get-StigValue $stigsettings "sshBanner" "ssh_banner" "/etc/issue"
     if ($results -eq $targetValue) {
-        Write-ToConsoleGreen "...SSH banner already set to $results on $($vmhost.name)"
+        Write-StigLog -Message "...SSH banner already set to $results on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring SSH banner to $targetValue on $($vmhost.name)..."
+        Write-StigLog -Message "...Configuring SSH banner to $targetValue on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.ssh.server.config.set.CreateArgs()
         $arguments.keyword = "banner"
         $arguments.value = $targetValue
@@ -328,9 +323,9 @@ Function ESXI-80-000201($vmhost, $stigsettings) {
     $exceptions = $lockdown.QueryLockdownExceptions()
     $targetUser = Get-StigValue $stigsettings "ExceptionUser" "exception_user" "root"
     if ($exceptions -contains $targetUser) {
-        Write-ToConsoleGreen "...Lockdown exception user list already contains: $targetUser"
+        Write-StigLog -Message "...Lockdown exception user list already contains: $targetUser" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Adding exception user: $targetUser..."
+        Write-StigLog -Message "...Adding exception user: $targetUser..." -Severity INFO -Source "EsxiRemediation"
         $lockdown.UpdateLockdownExceptions($targetUser) | Out-Null
     }
 }
@@ -340,9 +335,9 @@ Function ESXI-80-000202($vmhost, $stigsettings) {
     $results = $esxcli.system.ssh.server.config.list.invoke() | Where-Object {$_.Key -eq 'hostbasedauthentication'} | Select-Object -ExpandProperty Value
     $targetValue = Get-StigValue $stigsettings "sshHostbasedauth" "ssh_hostbased_auth" "no"
     if ($results -eq $targetValue) {
-        Write-ToConsoleGreen "...SSH hostbasedauthentication set correctly to $results on $($vmhost.name)"
+        Write-StigLog -Message "...SSH hostbasedauthentication set correctly to $results on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring SSH hostbasedauthentication to $targetValue on $($vmhost.name)..."
+        Write-StigLog -Message "...Configuring SSH hostbasedauthentication to $targetValue on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.ssh.server.config.set.CreateArgs()
         $arguments.keyword = "hostbasedauthentication"
         $arguments.value = $targetValue
@@ -355,9 +350,9 @@ Function ESXI-80-000204($vmhost, $stigsettings) {
     $results = $esxcli.system.ssh.server.config.list.invoke() | Where-Object {$_.Key -eq 'permituserenvironment'} | Select-Object -ExpandProperty Value
     $targetValue = Get-StigValue $stigsettings "sshPermituserenv" "ssh_permit_user_env" "no"
     if ($results -eq $targetValue) {
-        Write-ToConsoleGreen "...SSH permituserenvironment set correctly to $results on $($vmhost.name)"
+        Write-StigLog -Message "...SSH permituserenvironment set correctly to $results on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring SSH permituserenvironment to $targetValue on $($vmhost.name)..."
+        Write-StigLog -Message "...Configuring SSH permituserenvironment to $targetValue on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.ssh.server.config.set.CreateArgs()
         $arguments.keyword = "permituserenvironment"
         $arguments.value = $targetValue
@@ -370,9 +365,9 @@ Function ESXI-80-000207($vmhost, $stigsettings) {
     $results = $esxcli.system.ssh.server.config.list.invoke() | Where-Object {$_.Key -eq 'gatewayports'} | Select-Object -ExpandProperty Value
     $targetValue = Get-StigValue $stigsettings "sshGatewayports" "ssh_gateway_ports" "no"
     if ($results -eq $targetValue) {
-        Write-ToConsoleGreen "...SSH gatewayports set correctly to $results on $($vmhost.name)"
+        Write-StigLog -Message "...SSH gatewayports set correctly to $results on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring SSH gatewayports to $targetValue on $($vmhost.name)..."
+        Write-StigLog -Message "...Configuring SSH gatewayports to $targetValue on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.ssh.server.config.set.CreateArgs()
         $arguments.keyword = "gatewayports"
         $arguments.value = $targetValue
@@ -385,9 +380,9 @@ Function ESXI-80-000209($vmhost, $stigsettings) {
     $results = $esxcli.system.ssh.server.config.list.invoke() | Where-Object {$_.Key -eq 'permittunnel'} | Select-Object -ExpandProperty Value
     $targetValue = Get-StigValue $stigsettings "sshPermittunnel" "ssh_permit_tunnel" "no"
     if ($results -eq $targetValue) {
-        Write-ToConsoleGreen "...SSH permittunnel set correctly to $results on $($vmhost.name)"
+        Write-StigLog -Message "...SSH permittunnel set correctly to $results on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring SSH permittunnel to $targetValue on $($vmhost.name)..."
+        Write-StigLog -Message "...Configuring SSH permittunnel to $targetValue on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.ssh.server.config.set.CreateArgs()
         $arguments.keyword = "permittunnel"
         $arguments.value = $targetValue
@@ -400,9 +395,9 @@ Function ESXI-80-000210($vmhost, $stigsettings) {
     $results = $esxcli.system.ssh.server.config.list.invoke() | Where-Object {$_.Key -eq 'clientalivecountmax'} | Select-Object -ExpandProperty Value
     $targetValue = Get-StigValue $stigsettings "sshClientalivecountmax" "ssh_client_alive_count_max" "3"
     if ($results -eq $targetValue) {
-        Write-ToConsoleGreen "...SSH clientalivecountmax set correctly to $results on $($vmhost.name)"
+        Write-StigLog -Message "...SSH clientalivecountmax set correctly to $results on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring SSH clientalivecountmax to $targetValue on $($vmhost.name)..."
+        Write-StigLog -Message "...Configuring SSH clientalivecountmax to $targetValue on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.ssh.server.config.set.CreateArgs()
         $arguments.keyword = "clientalivecountmax"
         $arguments.value = $targetValue
@@ -415,9 +410,9 @@ Function ESXI-80-000211($vmhost, $stigsettings) {
     $results = $esxcli.system.ssh.server.config.list.invoke() | Where-Object {$_.Key -eq 'clientaliveinterval'} | Select-Object -ExpandProperty Value
     $targetValue = Get-StigValue $stigsettings "sshClientaliveinterval" "ssh_client_alive_interval" "200"
     if ($results -eq $targetValue) {
-        Write-ToConsoleGreen "...SSH clientaliveinterval set correctly to $results on $($vmhost.name)"
+        Write-StigLog -Message "...SSH clientaliveinterval set correctly to $results on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring SSH clientaliveinterval to $targetValue on $($vmhost.name)..."
+        Write-StigLog -Message "...Configuring SSH clientaliveinterval to $targetValue on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.ssh.server.config.set.CreateArgs()
         $arguments.keyword = "clientaliveinterval"
         $arguments.value = $targetValue
@@ -429,9 +424,9 @@ Function ESXI-80-000212($vmhost, $stigsettings) {
     $esxcli = Get-EsxCli -VMHost $vmhost -V2 -ErrorAction Stop
     $results = $esxcli.system.snmp.get.Invoke()
     if ($results.enable -eq "false" -or $results.enable -eq $false) {
-        Write-ToConsoleGreen "...SNMP is disabled correctly on $($vmhost.name)"
+        Write-StigLog -Message "...SNMP is disabled correctly on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Disabling SNMP on $($vmhost.name)..."
+        Write-StigLog -Message "...Disabling SNMP on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.snmp.set.CreateArgs()
         $arguments.enable = $false
         $esxcli.system.snmp.set.Invoke($arguments) | Out-Null
@@ -442,13 +437,13 @@ Function ESXI-80-000214($vmhost, $stigsettings) {
     $esxcli = Get-EsxCli -VMHost $vmhost -V2 -ErrorAction Stop
     $results = $esxcli.network.firewall.get.invoke()
     if ($results.DefaultAction -ne "DROP" -or $results.Enabled -ne "true") {
-        Write-ToConsoleYellow "...Default firewall policy not DROP on $($vmhost.name)...configuring."
+        Write-StigLog -Message "...Default firewall policy not DROP on $($vmhost.name)...configuring." -Severity INFO -Source "EsxiRemediation"
         $fwargs = $esxcli.network.firewall.set.CreateArgs()
         $fwargs.enabled = $true
         $fwargs.defaultaction = $false
         $esxcli.network.firewall.set.Invoke($fwargs) | Out-Null
     } else {
-        Write-ToConsoleGreen "...Default firewall policy drops traffic cleanly."
+        Write-StigLog -Message "...Default firewall policy drops traffic cleanly." -Severity INFO -Source "EsxiRemediation"
     }
 }
 
@@ -457,9 +452,9 @@ Function ESXI-80-000230($vmhost, $stigsettings) {
     $results = $esxcli.system.ssh.server.config.list.invoke() | Where-Object {$_.Key -eq 'allowtcpforwarding'} | Select-Object -ExpandProperty Value
     $targetValue = Get-StigValue $stigsettings "sshAllowtcpforwarding" "ssh_allow_tcp_forwarding" "no"
     if ($results -eq $targetValue) {
-        Write-ToConsoleGreen "...SSH allowtcpforwarding set correctly to $results on $($vmhost.name)"
+        Write-StigLog -Message "...SSH allowtcpforwarding set correctly to $results on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring SSH allowtcpforwarding to $targetValue on $($vmhost.name)..."
+        Write-StigLog -Message "...Configuring SSH allowtcpforwarding to $targetValue on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $arguments = $esxcli.system.ssh.server.config.set.CreateArgs()
         $arguments.keyword = "allowtcpforwarding"
         $arguments.value = $targetValue
@@ -471,9 +466,9 @@ Function ESXI-80-000238($vmhost, $stigsettings) {
     $esxcli = Get-EsxCli -VMHost $vmhost -V2 -ErrorAction Stop
     $results = $esxcli.system.settings.encryption.get.invoke()
     if ($results.Mode -eq "TPM") {
-        Write-ToConsoleGreen "...TPM configuration encryption already required on $($vmhost.name)"
+        Write-StigLog -Message "...TPM configuration encryption already required on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring TPM encryption mode..."
+        Write-StigLog -Message "...Configuring TPM encryption mode..." -Severity INFO -Source "EsxiRemediation"
         $encargs = $esxcli.system.settings.encryption.set.CreateArgs()
         $encargs.mode = "TPM"
         $esxcli.system.settings.encryption.set.Invoke($encargs) | Out-Null
@@ -484,9 +479,9 @@ Function ESXI-80-000245($vmhost, $stigsettings) {
     $esxcli = Get-EsxCli -VMHost $vmhost -V2 -ErrorAction Stop
     $results = $esxcli.system.settings.kernel.list.invoke() | Where-Object {$_.Name -eq "disableHwrng"} | Select-Object -ExpandProperty Configured
     if ($results -eq "FALSE") {
-        Write-ToConsoleGreen "...disableHwrng set correctly to $results on $($vmhost.name)"
+        Write-StigLog -Message "...disableHwrng set correctly to $results on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring disableHwrng on $($vmhost.name)"
+        Write-StigLog -Message "...Configuring disableHwrng on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
         $enthwargs = $esxcli.system.settings.kernel.set.CreateArgs()
         $enthwargs.setting = "disableHwrng"
         $enthwargs.value = "FALSE"
@@ -498,9 +493,9 @@ Function ESXI-80-000246($vmhost, $stigsettings) {
     $esxcli = Get-EsxCli -VMHost $vmhost -V2 -ErrorAction Stop
     $results = $esxcli.system.syslog.config.logfilter.get.invoke() | Select-Object -ExpandProperty LogFilteringEnabled
     if ($results -eq $false) {
-        Write-ToConsoleGreen "...log filtering set correctly on $($vmhost.name)"
+        Write-StigLog -Message "...log filtering set correctly on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring log filtering on $($vmhost.name)"
+        Write-StigLog -Message "...Configuring log filtering on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
         $lfargs = $esxcli.system.syslog.config.logfilter.set.CreateArgs()
         $lfargs.logfilteringenabled = $false
         $esxcli.system.syslog.config.logfilter.set.invoke($lfargs) | Out-Null
@@ -515,9 +510,9 @@ Function ESXI-80-000247($vmhost, $stigsettings) {
     $results = $esxcli.system.tls.server.get.invoke($tlscheckargs) | Select-Object -ExpandProperty Profile
     $targetProfile = Get-StigValue $stigsettings "tlsServerProfile" "tls_server_profile" "NIST_2024"
     if ($results -eq $targetProfile) {
-        Write-ToConsoleGreen "...TLS server profile set correctly on $($vmhost.name)"
+        Write-StigLog -Message "...TLS server profile set correctly on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring TLS server profile on $($vmhost.name)"
+        Write-StigLog -Message "...Configuring TLS server profile on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
         $tlsargs = $esxcli.system.tls.server.set.CreateArgs()
         $tlsargs.profile = $targetProfile
         $esxcli.system.tls.server.set.invoke($tlsargs) | Out-Null
@@ -528,9 +523,9 @@ Function ESXI-80-000248($vmhost, $stigsettings) {
     $esxcli = Get-EsxCli -VMHost $vmhost -V2 -ErrorAction Stop
     $results = $esxcli.system.security.keypersistence.get.invoke() | Select-Object -ExpandProperty Enabled
     if ($results -eq $false) {
-        Write-ToConsoleGreen "...key persistence set correctly on $($vmhost.name)"
+        Write-StigLog -Message "...key persistence set correctly on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring key persistence on $($vmhost.name)"
+        Write-StigLog -Message "...Configuring key persistence on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
         $kpargs = $esxcli.system.security.keypersistence.disable.CreateArgs()
         $kpargs.removeallstoredkeys = $true
         $esxcli.system.security.keypersistence.disable.invoke($kpargs) | Out-Null
@@ -541,9 +536,9 @@ Function ESXI-80-000249($vmhost, $stigsettings) {
     $esxcli = Get-EsxCli -VMHost $vmhost -V2 -ErrorAction Stop
     $results = $esxcli.system.account.list.Invoke() | Where-Object {$_.UserID -eq 'dcui'} | Select-Object -ExpandProperty Shellaccess
     if ($results -eq $false) {
-        Write-ToConsoleGreen "...dcui shell access set correctly on $($vmhost.name)"
+        Write-StigLog -Message "...dcui shell access set correctly on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Configuring dcui shell access on $($vmhost.name)"
+        Write-StigLog -Message "...Configuring dcui shell access on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
         $dcuisaargs = $esxcli.system.account.set.CreateArgs()
         $dcuisaargs.id = "dcui"
         $dcuisaargs.shellaccess = "false"
@@ -556,44 +551,44 @@ Function ESXI-80-000249($vmhost, $stigsettings) {
 Function ESXI-80-000193($vmhost, $stigsettings) {
     $esxservice = $vmhost | Get-VMHostService | Where-Object {$_.Label -eq "SSH"}
     if ($esxservice.Running -eq $true -or $esxservice.Policy -eq "on") {
-        Write-ToConsoleYellow "...Stopping SSH Service on $($vmhost.name)..."
+        Write-StigLog -Message "...Stopping SSH Service on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $esxservice | Set-VMHostService -Policy Off -Confirm:$false | Out-Null
         $esxservice | Stop-VMHostService -Confirm:$false | Out-Null
     } else {
-        Write-ToConsoleGreen "...SSH Service is already stopped."
+        Write-StigLog -Message "...SSH Service is already stopped." -Severity INFO -Source "EsxiRemediation"
     }
 }
 
 Function ESXI-80-000194($vmhost, $stigsettings) {
     $esxservice = $vmhost | Get-VMHostService | Where-Object {$_.Label -eq "ESXi Shell"}
     if ($esxservice.Running -eq $true -or $esxservice.Policy -eq "on") {
-        Write-ToConsoleYellow "...Stopping ESXi Shell Service on $($vmhost.name)..."
+        Write-StigLog -Message "...Stopping ESXi Shell Service on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $esxservice | Set-VMHostService -Policy Off -Confirm:$false | Out-Null
         $esxservice | Stop-VMHostService -Confirm:$false | Out-Null
     } else {
-        Write-ToConsoleGreen "...ESXi Shell Service is already stopped."
+        Write-StigLog -Message "...ESXi Shell Service is already stopped." -Severity INFO -Source "EsxiRemediation"
     }
 }
 
 Function ESXI-80-000231($vmhost, $stigsettings) {
     $esxservice = $vmhost | Get-VMHostService | Where-Object {$_.Label -eq "slpd"}
     if ($esxservice.Running -eq $true) {
-        Write-ToConsoleYellow "...Stopping slpd service on $($vmhost.name)..."
+        Write-StigLog -Message "...Stopping slpd service on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $esxservice | Set-VMHostService -Policy Off -Confirm:$false | Out-Null
         $esxservice | Stop-VMHostService -Confirm:$false | Out-Null
     } else {
-        Write-ToConsoleGreen "...slpd Service is already stopped."
+        Write-StigLog -Message "...slpd Service is already stopped." -Severity INFO -Source "EsxiRemediation"
     }
 }
 
 Function ESXI-80-000228($vmhost, $stigsettings) {
     $esxservice = $vmhost | Get-VMHostService | Where-Object {$_.Label -eq "CIM Server"}
     if ($esxservice.Running -eq $true) {
-        Write-ToConsoleYellow "...Stopping CIM service on $($vmhost.name)..."
+        Write-StigLog -Message "...Stopping CIM service on $($vmhost.name)..." -Severity INFO -Source "EsxiRemediation"
         $esxservice | Set-VMHostService -Policy Off -Confirm:$false | Out-Null
         $esxservice | Stop-VMHostService -Confirm:$false | Out-Null
     } else {
-        Write-ToConsoleGreen "...CIM Service is already stopped."
+        Write-StigLog -Message "...CIM Service is already stopped." -Severity INFO -Source "EsxiRemediation"
     }
 }
 
@@ -605,7 +600,7 @@ Function ESXI-80-000124($vmhost, $stigsettings) {
         $vmhost | Get-VMHostService | Where-Object {$_.Label -eq "NTP Daemon"} | Set-VMHostService -policy On | Out-Null
         $vmhost | Get-VMHostService | Where-Object {$_.Label -eq "NTP Daemon"} | Start-VMHostService | Out-Null
     } elseif (Compare-object $CurrentNTP $ntpList) {
-        Write-ToConsoleYellow "...Setting NTP on $($vmhost)..."
+        Write-StigLog -Message "...Setting NTP on $($vmhost)..." -Severity INFO -Source "EsxiRemediation"
         foreach ($ntp in $CurrentNTP) {
             $vmhost | Remove-VMHostNtpServer -NtpServer $ntp -Confirm:$false -ErrorAction Stop | Out-Null
         }
@@ -613,7 +608,7 @@ Function ESXI-80-000124($vmhost, $stigsettings) {
         $vmhost | Get-VMHostService | Where-Object {$_.Label -eq "NTP Daemon"} | Set-VMHostService -policy On | Out-Null
         $vmhost | Get-VMHostService | Where-Object {$_.Label -eq "NTP Daemon"} | Start-VMHostService | Out-Null
     } else {
-        Write-ToConsoleGreen "NTP Already Set correctly on $($vmhost.name)"
+        Write-StigLog -Message "NTP Already Set correctly on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     }
 }
 
@@ -621,9 +616,9 @@ Function ESXI-80-000049($vmhost, $stigsettings) {
     $adJoin = Get-VMHostAuthentication -VMHost $vmhost.name 
     $domain = Get-StigValue $stigsettings "domainName" "domain_name" "niprpnp.army.mil"
     if ($adJoin.domain -eq $domain) {
-        Write-ToConsoleGreen "...$($vmhost.name) is already joined to the Domain."
+        Write-StigLog -Message "...$($vmhost.name) is already joined to the Domain." -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleYellow "...Skipping Active Directory Join: automated credential prompt bypassed in modular pipeline."
+        Write-StigLog -Message "...Skipping Active Directory Join: automated credential prompt bypassed in modular pipeline." -Severity INFO -Source "EsxiRemediation"
     }
 }
 
@@ -632,11 +627,11 @@ Function ESXI-80-000008($vmhost, $stigsettings) {
     $val = Get-StigValue $stigsettings "lockdownlevel" "lockdown_level" "lockdownNormal"
     $vmhostv = $vmhost | Get-View 
     if ($vmhostv.config.LockdownMode -ne $val) {
-        Write-ToConsoleYellow "...Enabling Lockdown mode with level $val on $($vmhost.name)"
+        Write-StigLog -Message "...Enabling Lockdown mode with level $val on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
         $lockdown = Get-View $vmhostv.ConfigManager.HostAccessManager -ErrorAction Stop 
         $lockdown.ChangeLockdownMode($val) | Out-Null
     } else {
-        Write-ToConsoleGreen "...Lockdown mode already set to $val on $($vmhost.name)"
+        Write-StigLog -Message "...Lockdown mode already set to $val on $($vmhost.name)" -Severity INFO -Source "EsxiRemediation"
     }
 }
 
@@ -648,16 +643,16 @@ Function ESXI-80-000221($vmhost, $stigsettings) {
     $build = $vmhost.ExtensionData.Config.Product.build
     $TargetBuild = Get-StigValue $stigsettings "esxiLatestBuild" "esxi_latest_build" "25595708"
     if ($build -ge $TargetBuild) {
-        Write-ToConsoleGreen "...ESXi build $build is up-to-date (Latest target: $TargetBuild)"
+        Write-StigLog -Message "...ESXi build $build is up-to-date (Latest target: $TargetBuild)" -Severity INFO -Source "EsxiRemediation"
     } else {
-        Write-ToConsoleRed "...ESXi build $build is outdated (Latest target: $TargetBuild). Needs patch!"
+        Write-StigLog -Message "...ESXi build $build is outdated (Latest target: $TargetBuild). Needs patch!" -Severity INFO -Source "EsxiRemediation"
     }
 }
 
 # --- Firewall Exceptions configuration (V-258794) ---
 Function ESXI-80-000239($vmhost, $stigsettings) {
     $STIGID = "ESXI-80-000239"
-    Write-ToConsole "...Remediating Firewall Exceptions Rule: $STIGID"
+    Write-StigLog -Message "...Remediating Firewall Exceptions Rule: $STIGID" -Severity INFO -Source "EsxiRemediation"
     $fwsys = Get-View $vmhost.ExtensionData.ConfigManager.FirewallSystem
     $fwservices = $fwsys.FirewallInfo.Ruleset | Where-Object {
         ($_.IpListUserConfigurable -eq $true) -and ($_.Enabled -eq $true) -and ($_.AllowedHosts.AllIp -eq $true)
@@ -665,7 +660,7 @@ Function ESXI-80-000239($vmhost, $stigsettings) {
 
     $allowedIpsList = Get-StigValue $stigsettings "allowedips" "allowed_ips" "10.0.0.0/8"
     if ($null -eq $fwservices) {
-        Write-ToConsoleGreen "...ESXi Firewall Rules already restrict access cleanly on $($vmhost.name)."
+        Write-StigLog -Message "...ESXi Firewall Rules already restrict access cleanly on $($vmhost.name)." -Severity INFO -Source "EsxiRemediation"
         return
     }
 
@@ -679,7 +674,7 @@ Function ESXI-80-000239($vmhost, $stigsettings) {
     }
 
     foreach ($service in $fwservices) {
-        Write-ToConsoleYellow "...Configuring Firewall exceptions on service '$($service.Label)' to isolate traffic."
+        Write-StigLog -Message "...Configuring Firewall exceptions on service '$($service.Label)' to isolate traffic." -Severity INFO -Source "EsxiRemediation"
         $rulesetSpec = New-Object VMware.Vim.HostFirewallRulesetRulesetSpec
         $rulesetSpec.allowedHosts = New-Object VMware.Vim.HostFirewallRulesetIpList
         $rulesetSpec.allowedHosts.allIp = $false
@@ -744,44 +739,44 @@ Function ESXI-80-000218($vmhost, $stigsettings) {
 Function ESXI-80-000220($vmhost, $stigsettings) {
     $portgroups = Get-VirtualPortGroup -VMHost $vmhost -Standard | Where-Object {$_.VlanId -eq 4095}
     foreach ($pg in $portgroups) {
-        Write-ToConsoleRed "V-258775 Warning: Portgroup '$($pg.Name)' is configured with VLAN 4095 (VGT). Must be evaluated manually."
+        Write-StigLog -Message "V-258775 Warning: Portgroup '$($pg.Name)' is configured with VLAN 4095 (VGT). Must be evaluated manually." -Severity INFO -Source "EsxiRemediation"
     }
 }
 
 # --- OS & Ansible Automated Files ---
 
 Function ESXI-80-000236($vmhost, $stigsettings) {
-    Write-ToConsoleRed "Manual/Ansible task [ESXI-80-000236]: stat /etc/vmware/settings must be 0. Run Ansible playbook."
+    Write-StigLog -Message "Manual/Ansible task [ESXI-80-000236]: stat /etc/vmware/settings must be 0. Run Ansible playbook." -Severity INFO -Source "EsxiRemediation"
 }
 
 Function ESXI-80-000237($vmhost, $stigsettings) {
-    Write-ToConsoleRed "Manual/Ansible task [ESXI-80-000237]: grep vmx.log in /etc/vmware/config must be empty. Run Ansible playbook."
+    Write-StigLog -Message "Manual/Ansible task [ESXI-80-000237]: grep vmx.log in /etc/vmware/config must be empty. Run Ansible playbook." -Severity INFO -Source "EsxiRemediation"
 }
 
 # --- Manual Compliance Checkpoints ---
 
 Function ESXI-80-000240($vmhost, $stigsettings) {
-    Write-ToConsoleRed "Manual eval [ESXI-80-000240]: Host Profiles and Auto Deploy must utilize Authentication Proxy."
+    Write-StigLog -Message "Manual eval [ESXI-80-000240]: Host Profiles and Auto Deploy must utilize Authentication Proxy." -Severity INFO -Source "EsxiRemediation"
 }
 
 Function ESXI-80-000160($vmhost, $stigsettings) {
-    Write-ToConsoleRed "Manual eval [ESXI-80-000160]: Review VMkernel adapters and VLANs to isolate vMotion traffic."
+    Write-StigLog -Message "Manual eval [ESXI-80-000160]: Review VMkernel adapters and VLANs to isolate vMotion traffic." -Severity INFO -Source "EsxiRemediation"
 }
 
 Function ESXI-80-000198($vmhost, $stigsettings) {
-    Write-ToConsoleRed "Manual eval [ESXI-80-000198]: Review VMkernel adapters to isolate management traffic."
+    Write-StigLog -Message "Manual eval [ESXI-80-000198]: Review VMkernel adapters to isolate management traffic." -Severity INFO -Source "EsxiRemediation"
 }
 
 Function ESXI-80-000199($vmhost, $stigsettings) {
-    Write-ToConsoleRed "Manual eval [ESXI-80-000199]: Review VMkernel adapters to isolate IP-based storage traffic."
+    Write-StigLog -Message "Manual eval [ESXI-80-000199]: Review VMkernel adapters to isolate IP-based storage traffic." -Severity INFO -Source "EsxiRemediation"
 }
 
 Function ESXI-80-000145($vmhost, $stigsettings) {
-    Write-ToConsoleRed "Manual eval [ESXI-80-000145]: If iSCSI is in use, require bidirectional CHAP authentication."
+    Write-StigLog -Message "Manual eval [ESXI-80-000145]: If iSCSI is in use, require bidirectional CHAP authentication." -Severity INFO -Source "EsxiRemediation"
 }
 
 Function ESXI-80-000229($vmhost, $stigsettings) {
-    Write-ToConsoleRed "Manual eval [ESXI-80-000229]: Replacing VMCA host certificates with DoD-approved CA certs."
+    Write-StigLog -Message "Manual eval [ESXI-80-000229]: Replacing VMCA host certificates with DoD-approved CA certs." -Severity INFO -Source "EsxiRemediation"
 }
 
 # Export all STIG rule commands cleanly

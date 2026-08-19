@@ -263,7 +263,7 @@ function Invoke-StigRemediation {
                             $Process.WaitForExit()
 
                             if (-not (Test-Path $DeltaJson)) {
-                                [Console]::WriteLine("[$($Job.AssetName)] ERROR: cinc-auditor did not generate delta report!")
+                                Write-StigLog -Message "[$($Job.AssetName)] ERROR: cinc-auditor did not generate delta report!" -Severity ERROR -Source "Orchestrator"
                             }
 
                             if (Test-Path $DeltaJson) {
@@ -321,12 +321,12 @@ function Invoke-StigRemediation {
                                             $MasterNode.SelectSingleNode("STATUS").InnerText          = $vulnSTATUS
                                             $MasterNode.SelectSingleNode("FINDING_DETAILS").InnerXml  = $finalFindingDetails
                                             $MasterNode.SelectSingleNode("COMMENTS").InnerXml         = $finalComments
-                                            [Console]::WriteLine("[$($Job.AssetName)] -> Updated Checklist: $FixedRuleVer -> Status: $vulnSTATUS")
+                                            Write-StigLog -Message "[$($Job.AssetName)] -> Updated Checklist: $FixedRuleVer -> Status: $vulnSTATUS" -Severity SUCCESS -Source "Orchestrator"
                                         }
                                     }
 
                                     $XmlCkl.Save($Job.File)
-                                    [Console]::WriteLine("[$($Job.AssetName)] Delta verification successfully merged.")
+                                    Write-StigLog -Message "[$($Job.AssetName)] Delta verification successfully merged." -Severity SUCCESS -Source "Orchestrator"
                                 }
                             }
                             Remove-Item $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -343,6 +343,11 @@ function Invoke-StigRemediation {
                         
                         $WatcherScript = Join-Path $OverlayRoot "bin/run-stigman-watcher.sh"
                         $UploadOutput = bash -c "bash '$WatcherScript' '$CollectionId'" 2>&1
+
+                        # Clean up the inbox copy after successful upload (historical copy remains in /reports)
+                        if (Test-Path $StagedPath) {
+                            Remove-Item -Path $StagedPath -Force -ErrorAction SilentlyContinue
+                        }
                     }
                 } else {
                     # =========================================================================
@@ -403,7 +408,7 @@ function Invoke-StigRemediation {
                                 $Process.WaitForExit()
 
                                 if (-not (Test-Path $DeltaJson)) {
-                                    [Console]::WriteLine("[$($Job.AssetName)] ERROR: cinc-auditor did not generate delta report!")
+                                    Write-StigLog -Message "[$($Job.AssetName)] ERROR: cinc-auditor did not generate delta report!" -Severity ERROR -Source "Orchestrator"
                                 }
 
                                 if (Test-Path $DeltaJson) {
@@ -460,12 +465,12 @@ function Invoke-StigRemediation {
                                                 $MasterNode.SelectSingleNode("STATUS").InnerText          = $vulnSTATUS
                                                 $MasterNode.SelectSingleNode("FINDING_DETAILS").InnerXml  = $finalFindingDetails
                                                 $MasterNode.SelectSingleNode("COMMENTS").InnerXml         = $finalComments
-                                                [Console]::WriteLine("[$($Job.AssetName)] -> Updated Checklist: $FixedRuleVer -> Status: $vulnSTATUS")
+                                                Write-StigLog -Message "[$($Job.AssetName)] -> Updated Checklist: $FixedRuleVer -> Status: $vulnSTATUS" -Severity SUCCESS -Source "Orchestrator"
                                             }
                                         }
 
                                         $XmlCkl.Save($Job.File)
-                                        [Console]::WriteLine("[$($Job.AssetName)] Delta verification successfully merged.")
+                                        Write-StigLog -Message "[$($Job.AssetName)] Delta verification successfully merged." -Severity SUCCESS -Source "Orchestrator"
                                     }
                                 }
                                 Remove-Item $StagingDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -485,6 +490,11 @@ function Invoke-StigRemediation {
                                 
                                 $WatcherScript = Join-Path $OverlayRoot "bin/run-stigman-watcher.sh"
                                 $UploadOutput = bash -c "bash '$WatcherScript' '$CollectionId'" 2>&1
+
+                                # Clean up the inbox copy after upload (historical copy remains in /reports)
+                                if (Test-Path $StagedPath) {
+                                    Remove-Item -Path $StagedPath -Force -ErrorAction SilentlyContinue
+                                }
                             }
                             finally {
                                 $Mutex.ReleaseMutex()
@@ -499,6 +509,15 @@ function Invoke-StigRemediation {
             if (Get-Command Finalize-AssetProvider -ErrorAction SilentlyContinue) {
                 Finalize-AssetProvider -AssetObject $vCenterFQDN -Config $AssetConfig -Creds $CredObj
             }
+
+            # --- REPORTS RETENTION CLEANUP ---
+            # Keep only the last 5 date folders to prevent unbounded growth
+            Invoke-ReportsRetentionCleanup -ReportsBaseDir $ReportsBaseDir -KeepLast 5
+
+            # --- LOG RETENTION CLEANUP ---
+            # Keep structured logs, transcripts, and cron traces for the last 14 days
+            $LogDir = Join-Path $OverlayRoot "logs"
+            Invoke-LogRetentionCleanup -LogDirectory $LogDir -KeepDays 14
 
             Disconnect-VIServer -Server $ParentConnection -Confirm:$false | Out-Null
         }

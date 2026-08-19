@@ -81,7 +81,7 @@ function Get-StigInventory {
     $getEsxi = ($TargetType -contains 'All' -or $TargetType -contains 'ESXi')
     $getVm   = ($TargetType -contains 'All' -or $TargetType -contains 'VM')
 
-    Write-Host "[*] Starting Dynamic Inventory Discovery (Target Types: $($TargetType -join ', '))..." -ForegroundColor Cyan
+    Write-StigLog -Message "Starting Dynamic Inventory Discovery (Target Types: $($TargetType -join ', '))..." -Severity INFO -Source "Inventory"
 
     # 4. Process enabled targets that exist in vault
     foreach ($vCenterFQDN in $ActiveFqdns) {
@@ -183,7 +183,7 @@ function Invoke-StigAudit {
     )
 
     process {
-        Write-Host "[*] Routing targets to execution workers..." -ForegroundColor Cyan
+        Write-StigLog -Message "Routing targets to execution workers..." -Severity INFO -Source "Orchestrator"
         
         # VCSA Phase
         if ($TargetManifest.vCenters) { 
@@ -195,14 +195,14 @@ function Invoke-StigAudit {
             $TotalESXi = $TargetManifest.ESXiHosts.Count
             $BatchSize = 10 
 
-            Write-Host "[*] Discovered $TotalESXi ESXi hosts. Processing in batches of $BatchSize..." -ForegroundColor Cyan
+            Write-StigLog -Message "Discovered $TotalESXi ESXi hosts. Processing in batches of $BatchSize..." -Severity INFO -Source "Orchestrator"
             
             for ($i = 0; $i -lt $TotalESXi; $i += $BatchSize) {
                 $Batch = $TargetManifest.ESXiHosts | Select-Object -Skip $i -First $BatchSize
                 $BatchNumber = [math]::Floor($i / $BatchSize) + 1
                 $TotalBatches = [math]::Ceiling($TotalESXi / $BatchSize)
                 
-                Write-Host "`n[*] --- Processing ESXi Batch $BatchNumber of $TotalBatches ---" -ForegroundColor Yellow
+                Write-StigLog -Message "--- Processing ESXi Batch $BatchNumber of $TotalBatches ---" -Severity INFO -Source "Orchestrator"
                 
                 Invoke-EsxiAudit -TargetList $Batch -OverlayRoot $OverlayRoot | Format-StigChecklist -OverlayRoot $OverlayRoot
             }
@@ -213,14 +213,14 @@ function Invoke-StigAudit {
             $TotalVMs  = $TargetManifest.VMs.Count
             $BatchSize = 40 
 
-            Write-Host "[*] Discovered $TotalVMs VMs. Processing in batches of $BatchSize..." -ForegroundColor Cyan
+            Write-StigLog -Message "Discovered $TotalVMs VMs. Processing in batches of $BatchSize..." -Severity INFO -Source "Orchestrator"
             
             for ($i = 0; $i -lt $TotalVMs; $i += $BatchSize) {
                 $Batch = $TargetManifest.VMs | Select-Object -Skip $i -First $BatchSize
                 $BatchNumber = [math]::Floor($i / $BatchSize) + 1
                 $TotalBatches = [math]::Ceiling($TotalVMs / $BatchSize)
                 
-                Write-Host "`n[*] --- Processing VM Batch $BatchNumber of $TotalBatches ---" -ForegroundColor Yellow
+                Write-StigLog -Message "--- Processing VM Batch $BatchNumber of $TotalBatches ---" -Severity INFO -Source "Orchestrator"
                 
                 Invoke-VmAudit -TargetList $Batch -OverlayRoot $OverlayRoot | Format-StigChecklist -OverlayRoot $OverlayRoot
             }
@@ -262,7 +262,7 @@ function Format-StigChecklist {
 
     end {
         if ($ResultsQueue.Count -gt 0) {
-            Write-Host "[*] Initiating Parallel Formatting for $($ResultsQueue.Count) targets..." -ForegroundColor Cyan
+            Write-StigLog -Message "Initiating Parallel Formatting for $($ResultsQueue.Count) targets..." -Severity INFO -Source "Formatter"
         }
 
         $ResultsQueue | ForEach-Object -Parallel {
@@ -436,7 +436,7 @@ function Format-StigChecklist {
 
                 try {
                     Update-CklTemplate -UpdateJobs @($UpdateJob) -UpdateType $TargetType
-                    Write-Host " [+] Successfully formatted and saved: $FinalCkl" -ForegroundColor Green
+                    Write-StigLog -Message "Successfully formatted and saved: $FinalCkl" -Severity SUCCESS -Source "Formatter"
                 } catch {
                     Write-StigLog -Message "Failed to apply final formatting for ${TargetName}: $($_.Exception.Message)" -Severity ERROR -Source "Formatter"
                 }
@@ -514,8 +514,15 @@ function Invoke-MultiVcsaOrchestration {
                 Get-StigScanSummary -ReportDir $VcsaReportPath -AnswersXmlPath $VcsaAnswersXml
 
                 Invoke-StigManSync -vCenterShortName $vCenterShortName -SectionReportDir $VcsaReportPath -OverlayRoot $OverlayRoot
+                
+                # Automated retention cleanup after each vCenter section
+                Invoke-ReportsRetentionCleanup -ReportsBaseDir (Join-Path $OverlayRoot "reports") -KeepLast 5
             }
         }
+        
+        # Automated log cleanup at end of full cycle
+        Invoke-LogRetentionCleanup -LogDirectory (Join-Path $OverlayRoot "logs") -KeepDays 14
+        
         Write-ElapsedTime -StartTime $StartTime -Message "Multi-VCSA Auditing Cycle Complete." -Source "VcsaOrch"
     }
     catch {
@@ -560,8 +567,15 @@ function Invoke-MultiEsxiOrchestration {
                 Get-StigScanSummary -ReportDir $EsxiReportPath -AnswersXmlPath $EsxiAnswersXml
 
                 Invoke-StigManSync -vCenterShortName $vCenterShortName -SectionReportDir $EsxiReportPath -OverlayRoot $OverlayRoot
+                
+                # Automated retention cleanup after each vCenter section
+                Invoke-ReportsRetentionCleanup -ReportsBaseDir (Join-Path $OverlayRoot "reports") -KeepLast 5
             }
         }
+        
+        # Automated log cleanup at end of full cycle
+        Invoke-LogRetentionCleanup -LogDirectory (Join-Path $OverlayRoot "logs") -KeepDays 14
+        
         Write-ElapsedTime -StartTime $StartTime -Message "Multi-ESXi Auditing Cycle Complete." -Source "EsxiOrch"
     }
     catch {
@@ -606,8 +620,15 @@ function Invoke-MultiVmOrchestration {
                 Get-StigScanSummary -ReportDir $VmReportPath -AnswersXmlPath $VmAnswersXml
 
                 Invoke-StigManSync -vCenterShortName $vCenterShortName -SectionReportDir $VmReportPath -OverlayRoot $OverlayRoot
+                
+                # Automated retention cleanup after each vCenter section
+                Invoke-ReportsRetentionCleanup -ReportsBaseDir (Join-Path $OverlayRoot "reports") -KeepLast 5
             }
         }
+        
+        # Automated log cleanup at end of full cycle
+        Invoke-LogRetentionCleanup -LogDirectory (Join-Path $OverlayRoot "logs") -KeepDays 14
+        
         Write-ElapsedTime -StartTime $StartTime -Message "Multi-VM Auditing Cycle Complete." -Source "VmOrch"
     }
     catch {
@@ -615,4 +636,102 @@ function Invoke-MultiVmOrchestration {
     }
 }
 
-Export-ModuleMember -Function Get-StigInventory, Invoke-StigAudit, Format-StigChecklist, Invoke-MultiVcsaOrchestration, Invoke-MultiEsxiOrchestration, Invoke-MultiVmOrchestration, Invoke-MultiVMOrchestration
+<#
+.SYNOPSIS
+    Copies section CKL files to the corresponding STIG Manager Collection inbox 
+    and triggers the bash stigman-watcher one-shot upload.
+    Prioritizes the globally defined collection_id from global_config.yml.
+    After successful upload, removes the copied file from the inbox to keep it clean.
+#>
+function Invoke-StigManSync {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$vCenterShortName,
+        [Parameter(Mandatory=$true)][string]$SectionReportDir,
+        [string]$OverlayRoot = "/usr/share/stigs/orchestration_overlay"
+    )
+
+    # 1. Verify STIG Manager Integration is enabled in global configuration
+    $GlobalConfPath = Join-Path $OverlayRoot "conf/global_config.yml"
+    if (-not (Test-Path $GlobalConfPath)) {
+        Write-StigLog -Message "Global configuration file not found at $GlobalConfPath" -Severity ERROR -Source "StigManSync"
+        return
+    }
+    
+    $GlobalConf = Get-Content $GlobalConfPath -Raw | ConvertFrom-Yaml
+    $StigManConf = $GlobalConf.stigman_integration
+
+    if ($null -eq $StigManConf -or $StigManConf.enabled -ne $true) {
+        Write-StigLog -Message "STIG Manager sync bypassed (disabled or unconfigured in global_config.yml)." -Severity DEBUG -Source "StigManSync"
+        return
+    }
+
+    # 2. Resolve Collection ID: 
+    $CollectionId = $null
+
+    if ($StigManConf.collection_mappings -and $StigManConf.collection_mappings.$vCenterShortName) {
+        $CollectionId = $StigManConf.collection_mappings.$vCenterShortName
+        Write-StigLog -Message "[$vCenterShortName] Resolved override Collection ID: $CollectionId" -Severity INFO -Source "StigManSync"
+    }
+    elseif ($StigManConf.collection_id) {
+        $CollectionId = $StigManConf.collection_id
+        Write-StigLog -Message "[$vCenterShortName] Utilizing global Collection ID: $CollectionId from global_config.yml" -Severity INFO -Source "StigManSync"
+    }
+    else {
+        $CollectionId = "16" # Unified Fallback Default
+        Write-StigLog -Message "[$vCenterShortName] No Collection ID configured. Defaulting to fallback ID: $CollectionId" -Severity WARN -Source "StigManSync"
+    }
+
+    # 3. Resolve and prepare the Collection Inbox Directory
+    $InboxDir = "/usr/share/stigs/orchestration_overlay/stigman-watcher/inboxes/coll_$CollectionId"
+    if (-not (Test-Path $InboxDir)) {
+        New-Item -ItemType Directory -Path $InboxDir -Force | Out-Null
+    }
+
+    # 4. Copy newly formatted section CKL files to the Inbox folder
+    $CklFiles = Get-ChildItem -Path $SectionReportDir -Filter "*.ckl" -Recurse
+    if ($CklFiles.Count -eq 0) {
+        Write-StigLog -Message "No checklists found in $SectionReportDir to upload." -Severity INFO -Source "StigManSync"
+        return
+    }
+
+    $CopiedFiles = @()
+    foreach ($Ckl in $CklFiles) {
+        $DestPath = Join-Path $InboxDir $Ckl.Name
+        Copy-Item -Path $Ckl.FullName -Destination $DestPath -Force | Out-Null
+        $CopiedFiles += $DestPath
+        Write-StigLog -Message "[$vCenterShortName] Copied checklist to Watcher Inbox: $($Ckl.Name)" -Severity DEBUG -Source "StigManSync"
+    }
+
+    # 5. Resolve the Unix Bash Wrapper Script path
+    $WatcherScript = Join-Path $OverlayRoot "bin/run-stigman-watcher.sh"
+    if (-not (Test-Path $WatcherScript)) {
+        $WatcherScript = "/usr/share/stigs/orchestration_overlay/bin/run-stigman-watcher.sh"
+        if (-not (Test-Path $WatcherScript)) {
+            Write-StigLog -Message "Target execution script not found: $WatcherScript" -Severity ERROR -Source "StigManSync"
+            return
+        }
+    }
+
+    # 6. Execute Unix One-Shot upload using system-native bash interpreter
+    Write-StigLog -Message "Running STIG Manager Watcher upload payload for Collection $CollectionId..." -Severity INFO -Source "StigManSync"
+    
+    $BashCmd = "bash '$WatcherScript' '$CollectionId'"
+    $BashOutput = bash -c $BashCmd 2>&1
+
+    # 7. Inbox Hygiene: Remove copied files after successful upload to keep inbox clean
+    #    The authoritative historical copy remains in the dated /reports/ folder.
+    if ($LASTEXITCODE -eq 0) {
+        Write-StigLog -Message "STIG Manager synchronization successfully finalized for Collection $CollectionId." -Severity SUCCESS -Source "StigManSync"
+        
+        foreach ($file in $CopiedFiles) {
+            if (Test-Path $file) {
+                Remove-Item -Path $file -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } else {
+        Write-StigLog -Message "STIG Manager Watcher encountered errors (Exit Code: $LASTEXITCODE). Output: $BashOutput" -Severity ERROR -Source "StigManSync"
+    }
+}
+
+Export-ModuleMember -Function Get-StigInventory, Invoke-StigAudit, Format-StigChecklist, Invoke-MultiVcsaOrchestration, Invoke-MultiEsxiOrchestration, Invoke-MultiVmOrchestration, Invoke-MultiVMOrchestration, Invoke-StigManSync

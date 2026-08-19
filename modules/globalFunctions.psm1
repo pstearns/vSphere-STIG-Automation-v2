@@ -11,6 +11,7 @@
 <#
 .SYNOPSIS
     Initializes dual-channel logging (Structured App Log + Raw Transcript).
+    Sets global variables used by Write-StigLog for consistent enterprise logging.
 #>
 function Initialize-StigLogging {
     [CmdletBinding()]
@@ -19,21 +20,58 @@ function Initialize-StigLogging {
         [switch]$Silent
     )
     
-    if (-not (Test-Path $LogDirectory)) { 
-        New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null 
+    try {
+        if (-not (Test-Path $LogDirectory)) { 
+            New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null 
+        }
+        
+        $global:StigLogDirectory = $LogDirectory
+        $global:StigSilentMode   = $Silent.IsPresent
+        $global:StigAppLog       = Join-Path $LogDirectory "StigOrchestrator_$((Get-Date).ToString('yyyyMMdd')).log"
+        $TranscriptPath          = Join-Path $LogDirectory "Session_Transcript_$((Get-Date).ToString('yyyyMMdd_HHmmss')).txt"
+        
+        Start-Transcript -Path $TranscriptPath -Append -Force | Out-Null
+        
+        Write-StigLog -Message "Pipeline Logging Initialized. Silent Mode: $($global:StigSilentMode)" -Severity INFO -Source "System"
     }
+    catch {
+        Write-Warning "Failed to initialize structured logging: $($_.Exception.Message)"
+        $global:StigSilentMode = $Silent.IsPresent
+    }
+}
+
+<#
+.SYNOPSIS
+    Re-initializes logging context inside parallel runspaces.
+    Call this at the beginning of ForEach-Object -Parallel script blocks
+    so Write-StigLog works reliably with structured file + console output.
+#>
+function Initialize-ParallelLogging {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)][string]$LogDirectory,
+        [switch]$Silent
+    )
     
-    $global:StigSilentMode = $Silent.IsPresent
-    $global:StigAppLog     = Join-Path $LogDirectory "StigOrchestrator_$((Get-Date).ToString('yyyyMMdd')).log"
-    $TranscriptPath        = Join-Path $LogDirectory "Session_Transcript_$((Get-Date).ToString('yyyyMMdd_HHmmss')).txt"
-    
-    Start-Transcript -Path $TranscriptPath -Append -Force | Out-Null
-    Write-StigLog -Message "Pipeline Logging Initialized. Silent Mode: $($global:StigSilentMode)" -Severity INFO -Source "System"
+    try {
+        if (-not (Test-Path $LogDirectory)) { 
+            New-Item -ItemType Directory -Path $LogDirectory -Force | Out-Null 
+        }
+        
+        $global:StigLogDirectory = $LogDirectory
+        $global:StigSilentMode   = $Silent.IsPresent
+        $global:StigAppLog       = Join-Path $LogDirectory "StigOrchestrator_$((Get-Date).ToString('yyyyMMdd')).log"
+    }
+    catch {
+        # Fail silently in parallel context to avoid breaking remediation threads
+        $global:StigSilentMode = $Silent.IsPresent
+    }
 }
 
 <#
 .SYNOPSIS
     Writes structured, fixed-width log entries to file and console.
+    Hardened for parallel runspace safety and graceful degradation.
 #>
 function Write-StigLog {
     [CmdletBinding()]
@@ -46,8 +84,18 @@ function Write-StigLog {
     $Timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     $LogEntry  = "[$Timestamp] [$($Severity.PadRight(7))] [$($Source.PadRight(15))] $Message"
 
-    if ($global:StigAppLog) { Add-Content -Path $global:StigAppLog -Value $LogEntry }
+    # File logging with defensive handling (works in parallel runspaces)
+    if ($global:StigAppLog) {
+        try {
+            [System.IO.File]::AppendAllText($global:StigAppLog, "$LogEntry`r`n")
+        }
+        catch {
+            # Fallback: try Add-Content if direct file write fails
+            try { Add-Content -Path $global:StigAppLog -Value $LogEntry -ErrorAction SilentlyContinue } catch {}
+        }
+    }
 
+    # Console output (respects silent mode)
     if (-not $global:StigSilentMode) {
         switch ($Severity) {
             'INFO'    { Write-Host $LogEntry -ForegroundColor Cyan }
@@ -664,4 +712,106 @@ function Invoke-StigManSync {
     }
 }
 
-Export-ModuleMember -Function Initialize-StigLogging, Write-StigLog, Write-ElapsedTime, Get-DisaTemplate, Get-FormattedAnswer, Format-FindingDetail, Update-CklTemplate, Get-StigScanSummary, Invoke-StigManSync
+<#
+.SYNOPSIS
+    Enforces retention policy on the reports directory.
+    Keeps only the most recent N date folders (yyyyMMdd format) and deletes older ones.
+    This prevents unbounded growth of historical checklist data.
+#>
+function Invoke-ReportsRetentionCleanup {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)][string]$ReportsBaseDir,
+        [int]$KeepLast = 5
+    )
+
+    if (-not (Test-Path $ReportsBaseDir)) {
+        return
+    }
+
+    Write-StigLog -Message "Running reports retention cleanup (keeping last $KeepLast date folders)..." -Severity INFO -Source "Retention"
+
+    try {
+        $DateDirs = Get-ChildItem -Path $ReportsBaseDir -Directory | 
+                    Where-Object { $_.Name -match '^\d{8}$' } |
+                    Sort-Object Name -Descending
+
+        if ($DateDirs.Count -gt $KeepLast) {
+            $DirsToRemove = $DateDirs | Select-Object -Skip $KeepLast
+
+            foreach ($dir in $DirsToRemove) {
+                Write-StigLog -Message "Removing old reports folder: $($dir.FullName)" -Severity INFO -Source "Retention"
+                Remove-Item -Path $dir.FullName -Recurse -Force -ErrorAction SilentlyContinue
+            }
+            Write-StigLog -Message "Reports retention cleanup complete. Removed $($DirsToRemove.Count) old date folder(s)." -Severity SUCCESS -Source "Retention"
+        } else {
+            Write-StigLog -Message "Reports retention: No cleanup needed ($($DateDirs.Count) date folders present)." -Severity DEBUG -Source "Retention"
+        }
+    }
+    catch {
+        Write-StigLog -Message "Reports retention cleanup encountered an error: $($_.Exception.Message)" -Severity WARN -Source "Retention"
+    }
+}
+
+<#
+.SYNOPSIS
+    Automatically prunes old log files to prevent unbounded growth on the appliance.
+    Keeps structured daily logs and session transcripts for a configurable number of days.
+#>
+function Invoke-LogRetentionCleanup {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory=$true)][string]$LogDirectory,
+        [int]$KeepDays = 14
+    )
+
+    if (-not (Test-Path $LogDirectory)) {
+        return
+    }
+
+    Write-StigLog -Message "Running log retention cleanup (keeping last $KeepDays days of logs)..." -Severity INFO -Source "Retention"
+
+    try {
+        $CutoffDate = (Get-Date).AddDays(-$KeepDays)
+
+        # Clean up structured daily logs: StigOrchestrator_YYYYMMDD.log
+        $OldStructuredLogs = Get-ChildItem -Path $LogDirectory -Filter "StigOrchestrator_*.log" -File |
+                             Where-Object { $_.LastWriteTime -lt $CutoffDate }
+
+        foreach ($log in $OldStructuredLogs) {
+            Write-StigLog -Message "Removing old structured log: $($log.Name)" -Severity DEBUG -Source "Retention"
+            Remove-Item -Path $log.FullName -Force -ErrorAction SilentlyContinue
+        }
+
+        # Clean up session transcripts: Session_Transcript_YYYYMMDD_HHmmss.txt
+        $OldTranscripts = Get-ChildItem -Path $LogDirectory -Filter "Session_Transcript_*.txt" -File |
+                          Where-Object { $_.LastWriteTime -lt $CutoffDate }
+
+        foreach ($transcript in $OldTranscripts) {
+            Write-StigLog -Message "Removing old session transcript: $($transcript.Name)" -Severity DEBUG -Source "Retention"
+            Remove-Item -Path $transcript.FullName -Force -ErrorAction SilentlyContinue
+        }
+
+        # Clean up cron execution trace logs (these can grow large over time)
+        $CronTraceLogs = Get-ChildItem -Path $LogDirectory -Filter "*_trace.log" -File |
+                         Where-Object { $_.LastWriteTime -lt $CutoffDate }
+
+        foreach ($trace in $CronTraceLogs) {
+            Write-StigLog -Message "Removing old cron trace log: $($trace.Name)" -Severity DEBUG -Source "Retention"
+            Remove-Item -Path $trace.FullName -Force -ErrorAction SilentlyContinue
+        }
+
+        $TotalRemoved = $OldStructuredLogs.Count + $OldTranscripts.Count + $CronTraceLogs.Count
+
+        if ($TotalRemoved -gt 0) {
+            Write-StigLog -Message "Log retention cleanup complete. Removed $TotalRemoved old log file(s)." -Severity SUCCESS -Source "Retention"
+        } else {
+            Write-StigLog -Message "Log retention: No old logs to remove." -Severity DEBUG -Source "Retention"
+        }
+    }
+    catch {
+        Write-StigLog -Message "Log retention cleanup encountered an error: $($_.Exception.Message)" -Severity WARN -Source "Retention"
+    }
+}
+
+Export-ModuleMember -Function Initialize-StigLogging, Initialize-ParallelLogging, Write-StigLog, Write-ElapsedTime, Get-DisaTemplate, Get-FormattedAnswer, Format-FindingDetail, Update-CklTemplate, Get-StigScanSummary, Invoke-StigManSync, Invoke-ReportsRetentionCleanup, Invoke-LogRetentionCleanup
