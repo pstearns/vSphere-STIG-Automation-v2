@@ -26,16 +26,41 @@ function Set-VCSABashShell {
     $env:SSHPASS = $RootPassword
     $Status = $false
 
-    try {
-        # 1. Native SSH Call to check current default shell
-        $CurrentShell = sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 root@$FQDN 'echo $SHELL' 2>&1
+    # Retry configurations to handle VCSA SSH Service startup latency (SELF-HEALING)
+    $MaxAttempts = 6
+    $Attempt     = 1
+    $DelaySec    = 5
+    $CurrentShell = ""
 
-        # Check for SSH Connection / Authentication Failures (Force cast to string to handle ErrorRecords)
-        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$CurrentShell)) {
-            Write-Host "    [CRITICAL] SSH connection failed to $FQDN. Exit Code: $LASTEXITCODE. Error: $([string]$CurrentShell)" -ForegroundColor Red
-            return $false
+    while ($Attempt -le $MaxAttempts) {
+        try {
+            Write-Host "    [Attempt $Attempt/$MaxAttempts] Polling SSH daemon on $FQDN..." -ForegroundColor DarkGray
+            
+            # Check SSH connection and verify authorization
+            $CurrentShell = sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o ConnectionAttempts=1 root@$FQDN 'echo $SHELL' 2>&1
+
+            if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace([string]$CurrentShell)) {
+                Write-Host "    [+] SSH daemon accepted connection." -ForegroundColor Green
+                break
+            }
+        }
+        catch {
+            # Catch exceptions to keep pipeline from crashing during active wait cycle
         }
 
+        Write-Host "    [-] SSH daemon not accepting connections yet. Retrying in $DelaySec seconds..." -ForegroundColor Yellow
+        Start-Sleep -Seconds $DelaySec
+        $Attempt++
+    }
+
+    # Final Verification after loop completes
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace([string]$CurrentShell)) {
+        Write-Host "    [CRITICAL] SSH connection failed to $FQDN after $MaxAttempts attempts. Exit Code: $LASTEXITCODE. Error: $([string]$CurrentShell)" -ForegroundColor Red
+        Remove-Item env:SSHPASS -ErrorAction SilentlyContinue
+        return $false
+    }
+
+    try {
         # Cast to string before trimming to prevent ErrorRecord method failures
         $CurrentShell = ([string]$CurrentShell).Trim()
 
@@ -113,9 +138,6 @@ function Get-VCSANetworkInfo {
     $AuthHeader = @{ "Content-Type" = "application/json" }
     
     # --- Secure Internal Password Handling ---
-    # Convert the raw plain-text password to a SecureString strictly within protected RAM.
-    # This prevents the password from leaking into transcript logs while allowing 
-    # the creation of a PSCredential object required by Invoke-RestMethod.
     $SecurePass = ConvertTo-SecureString $Password -AsPlainText -Force
     $Creds      = New-Object System.Management.Automation.PSCredential ($Username, $SecurePass)
 
@@ -149,7 +171,7 @@ function Get-VCSANetworkInfo {
     Enables or disables SSH on the VCSA via the REST API.
 .DESCRIPTION
     Authenticates to the vCenter API using the provided Administrator credentials 
-    to toggle the SSH service state without requiring heavy PowerCLI modules.
+    to toggle the SSH service state with a built-in retry block to handle temporary API timeouts.
 #>
 function Set-VCSASshState {
     [CmdletBinding()]
@@ -169,19 +191,41 @@ function Set-VCSASshState {
     $SecurePass = ConvertTo-SecureString $Password -AsPlainText -Force
     $Creds      = New-Object System.Management.Automation.PSCredential ($Username, $SecurePass)
 
-    try {
-        $authToken = Invoke-RestMethod -Uri $AuthURL -Method Post -Headers $AuthHeader -Credential $Creds -SkipCertificateCheck
-        $apiHeader = @{ "vmware-api-session-id" = $authToken; "Content-Type" = "application/json" }
-        
-        $body = @{ enabled = $Enabled } | ConvertTo-Json
-        
-        # vCenter 7/8 API endpoint for SSH access
-        Invoke-RestMethod -Uri "https://$FQDN/api/appliance/access/ssh" -Headers $apiHeader -Method Put -Body $body -SkipCertificateCheck | Out-Null
-        
-        Write-StigLog -Message "SSH successfully set to $Enabled on $FQDN" -Severity SUCCESS -Source "SSHControl"
+    # API Retry Configurations (SELF-HEALING)
+    $MaxApiAttempts = 3
+    $ApiAttempt     = 1
+    $ApiDelaySec    = 5
+    $ApiSuccess     = $false
+
+    while ($ApiAttempt -le $MaxApiAttempts) {
+        try {
+            if ($ApiAttempt -gt 1) {
+                Write-StigLog -Message "[$FQDN] API Retry Attempt $ApiAttempt/$MaxApiAttempts to set SSH state..." -Severity WARN -Source "SSHControl"
+            }
+
+            # 1. Authenticate to the API to get the session token
+            $authToken = Invoke-RestMethod -Uri $AuthURL -Method Post -Headers $AuthHeader -Credential $Creds -SkipCertificateCheck -TimeoutSec 10
+            $apiHeader = @{ "vmware-api-session-id" = $authToken; "Content-Type" = "application/json" }
+            
+            $body = @{ enabled = $Enabled } | ConvertTo-Json
+            
+            # 2. Query the SSH toggle endpoint
+            Invoke-RestMethod -Uri "https://$FQDN/api/appliance/access/ssh" -Headers $apiHeader -Method Put -Body $body -SkipCertificateCheck -TimeoutSec 10 | Out-Null
+            
+            Write-StigLog -Message "SSH successfully set to $Enabled on $FQDN" -Severity SUCCESS -Source "SSHControl"
+            $ApiSuccess = $true
+            break
+        }
+        catch {
+            Write-StigLog -Message "[$FQDN] API Attempt $ApiAttempt failed: $($_.Exception.Message)" -Severity WARN -Source "SSHControl"
+            Start-Sleep -Seconds $ApiDelaySec
+            $ApiAttempt++
+        }
     }
-    catch {
-        Write-StigLog -Message "Failed to set SSH state on $FQDN. Error: $($_.Exception.Message)" -Severity ERROR -Source "SSHControl"
+
+    if (-not $ApiSuccess) {
+        Write-StigLog -Message "Failed to set SSH state on $FQDN after $MaxApiAttempts attempts." -Severity ERROR -Source "SSHControl"
+        throw "CRITICAL: Failed to modify VCSA SSH state via REST API."
     }
 }
 
