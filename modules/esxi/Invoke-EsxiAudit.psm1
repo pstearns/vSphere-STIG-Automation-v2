@@ -59,17 +59,73 @@ function Invoke-EsxiAudit {
         $CustomSshRawOut = Join-Path $RawJsonDir "$($Target.Name)_ESXi_CUSTOM_SSH_raw.json"
 
         # Base64 encode credentials to prevent command injection
-        $b64AdminPass = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Target.AdminPass))
         $b64RootPass  = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Target.RootPass))
         $InputArg = if (Test-Path $InputsFile) { "--input-file '$InputsFile'" } else { "" }
 
+        $HasBaseSsh   = ($null -ne $SshProfilePath -and (Test-Path $SshProfilePath))
+        $HasCustomSsh = (Test-Path (Join-Path $CustomSshProfilePath "inspec.yml"))
+
         # -------------------------------------------------------------
-        # PHASE 1: API (PowerCLI) Executions
+        # PHASE 1: SSH Executions (Open Access -> Audit -> Close Access)
         # -------------------------------------------------------------
+        if ($HasBaseSsh -or $HasCustomSsh) {
+            # Open SSH access and disable lockdown
+            Set-EsxiAccessState -vCenter $Target.vCenter -AdminUser $Target.AdminUser -AdminPass $Target.AdminPass -EsxiHost $Target.Name -Enabled $true
+
+            try {
+                if ($HasBaseSsh) {
+                    $SshCmd = "cinc-auditor exec '$SshProfilePath' -t ssh://root@$($Target.Name) --password `"`$(echo '$b64RootPass' | base64 -d)`" $InputArg --reporter json:'$SshRawOut'"
+                    $SshBashOutput = bash -c $SshCmd 2>&1
+                    if (-not (Test-Path $SshRawOut)) { 
+                        Write-StigLog -Message "SSH Audit failed to produce JSON for $($Target.Name). Output: $SshBashOutput" -Severity WARN -Source "EsxiWorker" 
+                    }
+                }
+
+                if ($HasCustomSsh) {
+                    Write-Host " -> [$($Target.Name)] Executing Custom ESXi SSH Overlay..." -ForegroundColor DarkCyan
+                    
+                    $CustomSshCmd = "cinc-auditor exec '$CustomSshProfilePath' -t ssh://root@$($Target.Name) --password `"`$(echo '$b64RootPass' | base64 -d)`" $InputArg --reporter json:'$CustomSshRawOut'"
+                    $CustomSshBashOutput = bash -c $CustomSshCmd 2>&1
+                    
+                    if (-not (Test-Path $CustomSshRawOut)) {
+                        Write-Host "    [DEBUG] Custom SSH Run Failed!" -ForegroundColor Red
+                        Write-Host "    [DEBUG] RAW OUTPUT START:" -ForegroundColor Red
+                        Write-Host $CustomSshBashOutput -ForegroundColor Gray
+                        Write-Host "    [DEBUG] RAW OUTPUT END" -ForegroundColor Red
+                    }
+                }
+            } finally {
+                # Ensure the host is ALWAYS locked down before API audits run
+                Set-EsxiAccessState -vCenter $Target.vCenter -AdminUser $Target.AdminUser -AdminPass $Target.AdminPass -EsxiHost $Target.Name -Enabled $false
+            }
+        } else {
+            Write-StigLog -Message "No SSH Profiles found (Base or Custom). Skipped SSH phases for $($Target.Name)." -Severity WARN -Source "EsxiWorker"
+        }
+
+        # -------------------------------------------------------------
+        # PHASE 2: API (PowerCLI) Executions against Secured Host
+        # -------------------------------------------------------------
+        Write-Host " -> [$($Target.Name)] Executing API Audits..." -ForegroundColor DarkGray
         
+        # Securely build the process environment (avoids Bash string injection and fixes SSL)
+        $ProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $ProcessInfo.FileName = "bash"
+        $ProcessInfo.UseShellExecute = $false
+        $ProcessInfo.RedirectStandardOutput = $true
+        $ProcessInfo.RedirectStandardError = $true
+        
+        # Inject credentials directly as process environment variables
+        $ProcessInfo.EnvironmentVariables["VISERVER"]          = $Target.vCenter
+        $ProcessInfo.EnvironmentVariables["VISERVER_USERNAME"] = $Target.AdminUser
+        $ProcessInfo.EnvironmentVariables["VISERVER_PASSWORD"] = $Target.AdminPass
+        $ProcessInfo.EnvironmentVariables["VISERVER_INSECURE"] = "true" # Forces cinc-auditor to bypass strict SSL checks
+
         # Execute Base API
-        $ApiCmd = "VISERVER='$($Target.vCenter)' VISERVER_USERNAME='$($Target.AdminUser)' VISERVER_PASSWORD=`"`$(echo '$b64AdminPass' | base64 -d)`" cinc-auditor exec '$ApiProfilePath' -t vmware:// $InputArg --input vmhostName=`"$($Target.Name)`" --reporter json:'$ApiRawOut'"
-        $ApiBashOutput = bash -c $ApiCmd 2>&1
+        $ProcessInfo.Arguments = "-c `"cinc-auditor exec '$ApiProfilePath' -t vmware:// $InputArg --input vmhostName='$($Target.Name)' --reporter json:'$ApiRawOut'`""
+        $Process = [System.Diagnostics.Process]::Start($ProcessInfo)
+        $ApiBashOutput = $Process.StandardOutput.ReadToEnd() + $Process.StandardError.ReadToEnd()
+        $Process.WaitForExit()
+
         if (-not (Test-Path $ApiRawOut)) { 
             Write-StigLog -Message "API Audit failed to produce JSON for $($Target.Name). Output: $ApiBashOutput" -Severity WARN -Source "EsxiWorker" 
         }
@@ -77,57 +133,18 @@ function Invoke-EsxiAudit {
         # Execute Custom API
         if (Test-Path (Join-Path $CustomApiProfilePath "inspec.yml")) {
             Write-Host " -> [$($Target.Name)] Executing Custom ESXi API Overlay..." -ForegroundColor DarkCyan
-            $CustomApiCmd = "VISERVER='$($Target.vCenter)' VISERVER_USERNAME='$($Target.AdminUser)' VISERVER_PASSWORD=`"`$(echo '$b64AdminPass' | base64 -d)`" cinc-auditor exec '$CustomApiProfilePath' -t vmware:// $InputArg --input vmhostName=`"$($Target.Name)`" --reporter json:'$CustomApiRawOut'"
             
-            # --- DEEP LOGGING FOR API ---
-            Write-Host "    [DEBUG] Running Custom API Command..." -ForegroundColor Yellow
-            $CustomApiBashOutput = bash -c $CustomApiCmd 2>&1
-            Write-Host "    [DEBUG] RAW API OUTPUT START:" -ForegroundColor Yellow
-            Write-Host $CustomApiBashOutput -ForegroundColor Gray
-            Write-Host "    [DEBUG] RAW API OUTPUT END" -ForegroundColor Yellow
-            # ------------------------
-        }
-        
-        # -------------------------------------------------------------
-        # PHASE 2: SSH Executions (Decoupled & Streamlined)
-        # -------------------------------------------------------------
-        
-        $HasBaseSsh   = ($null -ne $SshProfilePath -and (Test-Path $SshProfilePath))
-        $HasCustomSsh = (Test-Path (Join-Path $CustomSshProfilePath "inspec.yml"))
-
-        if ($HasBaseSsh -or $HasCustomSsh) {
-            # Open SSH access securely
-            Set-EsxiAccessState -vCenter $Target.vCenter -AdminUser $Target.AdminUser -AdminPass $Target.AdminPass -EsxiHost $Target.Name -Enabled $true
-
-            if ($HasBaseSsh) {
-                $SshCmd = "cinc-auditor exec '$SshProfilePath' -t ssh://root@$($Target.Name) --password `"`$(echo '$b64RootPass' | base64 -d)`" $InputArg --reporter json:'$SshRawOut'"
-                $SshBashOutput = bash -c $SshCmd 2>&1
-                if (-not (Test-Path $SshRawOut)) { 
-                    Write-StigLog -Message "SSH Audit failed to produce JSON for $($Target.Name). Output: $SshBashOutput" -Severity WARN -Source "EsxiWorker" 
-                }
+            $ProcessInfo.Arguments = "-c `"cinc-auditor exec '$CustomApiProfilePath' -t vmware:// $InputArg --input vmhostName='$($Target.Name)' --reporter json:'$CustomApiRawOut'`""
+            $Process = [System.Diagnostics.Process]::Start($ProcessInfo)
+            $CustomApiBashOutput = $Process.StandardOutput.ReadToEnd() + $Process.StandardError.ReadToEnd()
+            $Process.WaitForExit()
+            
+            if (-not (Test-Path $CustomApiRawOut)) {
+                Write-Host "    [DEBUG] Custom API Run Failed!" -ForegroundColor Red
+                Write-Host "    [DEBUG] RAW API OUTPUT START:" -ForegroundColor Red
+                Write-Host $CustomApiBashOutput -ForegroundColor Gray
+                Write-Host "    [DEBUG] RAW API OUTPUT END" -ForegroundColor Red
             }
-
-            if ($HasCustomSsh) {
-                Write-Host " -> [$($Target.Name)] Executing Custom ESXi SSH Overlay..." -ForegroundColor DarkCyan
-                
-                $CustomSshCmd = "cinc-auditor exec '$CustomSshProfilePath' -t ssh://root@$($Target.Name) --password `"`$(echo '$b64RootPass' | base64 -d)`" $InputArg --reporter json:'$CustomSshRawOut'"
-                
-                $CustomSshBashOutput = bash -c $CustomSshCmd 2>&1
-                
-                # --- DEEP LOGGING: Only prints if the JSON fails to generate ---
-                if (-not (Test-Path $CustomSshRawOut)) {
-                    Write-Host "    [DEBUG] Custom SSH Run Failed!" -ForegroundColor Red
-                    Write-Host "    [DEBUG] RAW OUTPUT START:" -ForegroundColor Red
-                    Write-Host $CustomSshBashOutput -ForegroundColor Gray
-                    Write-Host "    [DEBUG] RAW OUTPUT END" -ForegroundColor Red
-                }
-                # ---------------------------------------------------------------
-            }
-
-            # Close SSH access securely
-            Set-EsxiAccessState -vCenter $Target.vCenter -AdminUser $Target.AdminUser -AdminPass $Target.AdminPass -EsxiHost $Target.Name -Enabled $false
-        } else {
-            Write-StigLog -Message "No SSH Profiles found (Base or Custom). Skipped SSH phases for $($Target.Name)." -Severity WARN -Source "EsxiWorker"
         }
 
         # -------------------------------------------------------------
