@@ -1,6 +1,6 @@
 # =========================================================================
 # NAME: CredentialManagement.psm1
-# DESCRIPTION: Stores vCenter credentials in a true AES-256 encrypted vault.
+# DESCRIPTION: Stores vCenter and NetApp credentials in a true AES-256 encrypted vault.
 #              Includes an interactive menu for admins to manage passwords.
 # =========================================================================
 
@@ -122,7 +122,7 @@ function ConvertTo-StorableCredential {
 }
 
 # ====================================
-# Region: Credential Storage Functions
+# Region: vCenter Credential Functions
 # ====================================
 
 function Get-vCenterCredentialStore {
@@ -130,8 +130,20 @@ function Get-vCenterCredentialStore {
     param([Parameter(Mandatory)][string]$FilePath)
     
     $credentials = Import-CredentialFile -FilePath $FilePath
-    if (-not $credentials.vCenters) { $credentials = @{ vCenters = @() } }
-    elseif (-not ($credentials.vCenters -is [array])) { $credentials.vCenters = @($credentials.vCenters) }
+
+    # Convert PSCustomObject to Hashtable so we can add properties safely
+    if ($credentials -is [PSCustomObject]) {
+        $credentials = $credentials | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable
+    }
+    
+    if (-not $credentials) { 
+        $credentials = @{} 
+    }
+    
+    if (-not $credentials.ContainsKey('vCenters')) {
+        $credentials['vCenters'] = @()
+    }
+    
     return $credentials
 }
 
@@ -237,6 +249,122 @@ function Get-vCenterCredential {
     return $null
 }
 
+# ====================================
+# Region: NetApp Credential Functions
+# ====================================
+
+function Get-NetAppCredentialStore {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$FilePath)
+    
+    $credentials = Import-CredentialFile -FilePath $FilePath
+
+    # Convert PSCustomObject to Hashtable so we can add properties safely
+    if ($credentials -is [PSCustomObject]) {
+        $credentials = $credentials | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable
+    }
+    
+    if (-not $credentials) { 
+        $credentials = @{} 
+    }
+    
+    if (-not $credentials.ContainsKey('netappClusters')) {
+        $credentials['netappClusters'] = @()
+    }
+    
+    return $credentials
+}
+
+function Set-NetAppCredentialStore {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][PSObject]$Credentials, [Parameter(Mandatory)][string]$FilePath)
+    Export-CredentialFile -Data $Credentials -FilePath $FilePath
+}
+
+function Add-NetAppCredential {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FQDN,
+        [Parameter(Mandatory)][PSCredential]$AdminCred,
+        [Parameter(Mandatory)][string]$FilePath
+    )
+    $credentials = Get-NetAppCredentialStore -FilePath $FilePath
+    $existing = $credentials.netappClusters | Where-Object { $_.FQDN -eq $FQDN }
+    
+    if ($existing) {
+        Write-Output "A NetApp credential entry for '$FQDN' already exists."
+        return $false
+    }
+
+    $credentials.netappClusters += @{
+        FQDN      = $FQDN
+        AdminCred = ConvertTo-StorableCredential -Cred $AdminCred
+    }
+    
+    Set-NetAppCredentialStore -Credentials $credentials -FilePath $FilePath
+    Write-Output "New NetApp credential entry for '$FQDN' safely encrypted and added to vault."
+    return $true
+}
+
+function Get-NetAppCredential {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$FQDN, [Parameter(Mandatory)][string]$FilePath)
+    
+    $credentials = Get-NetAppCredentialStore -FilePath $FilePath
+    $entry = $credentials.netappClusters | Where-Object { $_.FQDN -eq $FQDN }
+    
+    if ($entry) {
+        $adminCredential = New-Object PSCredential $entry.AdminCred.UserName, (ConvertTo-SecureString $entry.AdminCred.Password -AsPlainText -Force)
+        
+        return [PSCustomObject]@{
+            FQDN      = $entry.FQDN
+            AdminCred = $adminCredential
+        }
+    }
+    Write-Warning "No NetApp credential entry found for '$FQDN'."
+    return $null
+}
+
+function Update-NetAppCredential {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FQDN,
+        [Parameter(Mandatory)][string]$FilePath,
+        [PSCredential]$NewAdminCred
+    )
+    $credentials = Get-NetAppCredentialStore -FilePath $FilePath
+    $entry = $credentials.netappClusters | Where-Object { $_.FQDN -eq $FQDN }
+    
+    if (-not $entry) {
+        Write-Warning "No NetApp entry found for '$FQDN'."
+        return $false
+    }
+
+    if ($NewAdminCred) { $entry.AdminCred = ConvertTo-StorableCredential -Cred $NewAdminCred }
+
+    Set-NetAppCredentialStore -Credentials $credentials -FilePath $FilePath
+    Write-Output "NetApp credential entry for '$FQDN' updated securely."
+    return $true
+}
+
+function Remove-NetAppCredential {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$FQDN, [Parameter(Mandatory)][string]$FilePath)
+    
+    $credentials = Get-NetAppCredentialStore -FilePath $FilePath
+    $origCount = $credentials.netappClusters.Count
+    $credentials.netappClusters = @($credentials.netappClusters | Where-Object { $_.FQDN -ne $FQDN })
+    
+    if ($credentials.netappClusters.Count -eq $origCount) {
+        Write-Warning "No NetApp credential entry for '$FQDN' was found to remove."
+        return $false
+    }
+    
+    Set-NetAppCredentialStore -Credentials $credentials -FilePath $FilePath
+    Write-Output "NetApp credential entry for '$FQDN' removed."
+    return $true
+}
+
 # ================================
 # Region: Menu / Interactive Mode
 # ================================
@@ -247,92 +375,133 @@ function Show-CredentialMenu {
     do {
         Clear-Host
         Write-Output "============================="
-        Write-Output "  vCenter Credential Manager"
+        Write-Output "     Credential Manager"
         Write-Output "============================="
-        Write-Output "1. Add credentials"
-        Write-Output "2. Modify credentials"
-        Write-Output "3. Remove credentials"
-        Write-Output "4. View credentials"
-        Write-Output "5. Exit"
+        Write-Output "1. Manage vCenter Credentials"
+        Write-Output "2. Manage NetApp Credentials"
+        Write-Output "3. Exit"
+        Write-Output "====================="
+        $choice = Read-Host "Select an option (1-3)"
+
+        switch ($choice) {
+            "1" { Show-VCenterMenu -FilePath $FilePath }
+            "2" { Show-NetAppMenu -FilePath $FilePath }
+            "3" {
+                Write-Output "Exiting Credential Manager..."
+                return
+            }
+            default {
+                Write-Warning "Invalid choice."
+                Pause
+            }
+        }
+    } while ($true)
+}
+
+function Show-VCenterMenu {
+    param([string]$FilePath)
+
+    do {
+        Clear-Host
+        Write-Output "============================="
+        Write-Output "   vCenter Credential Manager"
+        Write-Output "============================="
+        Write-Output "1. Add vCenter credentials"
+        Write-Output "2. Modify vCenter credentials"
+        Write-Output "3. Remove vCenter credentials"
+        Write-Output "4. View vCenter entries"
+        Write-Output "5. Back to main menu"
         Write-Output "====================="
         $choice = Read-Host "Select an option (1-5)"
 
         switch ($choice) {
             "1" {
-                $fqdn = Read-Host "Enter the FQDN"
-                $credentials = Get-vCenterCredentialStore -FilePath $FilePath
-                $existing = $credentials.vCenters | Where-Object { $_.FQDN -eq $fqdn }
-                if ($existing) {
-                    Write-Output "An entry for '$fqdn' already exists."
-                    $modifyChoice = Read-Host "Do you want to modify the existing entry? (Y/N)"
-                    if ($modifyChoice -match "^[Yy]") {
-                        $newAdminCred = Get-Credential -Message "Enter new VCSA Admin Credentials (suggestion: administrator@vsphere.local)"
-                        $newRootCred = Get-Credential -Message "Enter new VCSA Root Password" -UserName "root"
-                        $newEsxiCred = Get-Credential -Message "Enter new ESXi Root Password" -UserName "root"
-                        Update-vCenterCredential -FQDN $fqdn -FilePath $FilePath -NewAdminCred $newAdminCred -NewRootCred $newRootCred -NewEsxiCred $newEsxiCred
-                        Pause
-                    } else {
-                        Write-Output "No changes made. Returning to menu."
-                        Pause
-                    }
-                } else {
-                    $adminCred = Get-Credential -Message "Enter VCSA Admin Credentials (suggestion: administrator@vsphere.local)"
-                    $rootCred = Get-Credential -Message "Enter VCSA Root Password" -UserName "root"
-                    $esxiCred = Get-Credential -Message "Enter ESXi Root Password" -UserName "root"
-                    Add-vCenterCredential -FQDN $fqdn -AdminCred $adminCred -RootCred $rootCred -EsxiCred $esxiCred -FilePath $FilePath
-                    Pause
-                }
+                $fqdn = Read-Host "Enter the vCenter FQDN"
+                $adminCred = Get-Credential -Message "Enter vCenter Admin Credentials (e.g. administrator@vsphere.local)"
+                $rootCred  = Get-Credential -Message "Enter vCenter Root Password" -UserName "root"
+                $esxiCred  = Get-Credential -Message "Enter ESXi Root Password" -UserName "root"
+                Add-vCenterCredential -FQDN $fqdn -AdminCred $adminCred -RootCred $rootCred -EsxiCred $esxiCred -FilePath $FilePath
+                Pause
             }
             "2" {
-                $credentials = Get-vCenterCredentialStore -FilePath $FilePath
-                if (-not $credentials.vCenters -or $credentials.vCenters.Count -eq 0) {
-                    Write-Warning "No vCenter entries found to modify."
-                    Pause
-                    break
-                }
-                Write-Output "Stored vCenter FQDNs:"
-                $credentials.vCenters | ForEach-Object { Write-Output $_.FQDN }
-                $fqdn = Read-Host "Enter the FQDN for the entry you want to modify"
-                $entry = $credentials.vCenters | Where-Object { $_.FQDN -eq $fqdn }
-                if ($entry) {
-                    $newAdminCred = Get-Credential -Message "Enter new VCSA Admin Credentials (suggestion: administrator@vsphere.local)"
-                    $newRootCred = Get-Credential -Message "Enter new VCSA Root Password" -UserName "root"
-                    $newEsxiCred = Get-Credential -Message "Enter new ESXi Root Password" -UserName "root"
-                    Update-vCenterCredential -FQDN $fqdn -FilePath $FilePath -NewAdminCred $newAdminCred -NewRootCred $newRootCred -NewEsxiCred $newEsxiCred
-                } else {
-                    Write-Warning "No entry found for '$fqdn'."
-                }
+                $fqdn = Read-Host "Enter the vCenter FQDN to modify"
+                $newAdminCred = Get-Credential -Message "Enter new vCenter Admin Credentials"
+                $newRootCred  = Get-Credential -Message "Enter new vCenter Root Password" -UserName "root"
+                $newEsxiCred  = Get-Credential -Message "Enter new ESXi Root Password" -UserName "root"
+                Update-vCenterCredential -FQDN $fqdn -FilePath $FilePath -NewAdminCred $newAdminCred -NewRootCred $newRootCred -NewEsxiCred $newEsxiCred
                 Pause
             }
             "3" {
-                $credentials = Get-vCenterCredentialStore -FilePath $FilePath
-                if (-not $credentials.vCenters -or $credentials.vCenters.Count -eq 0) {
-                    Write-Warning "No vCenter entries found to remove."
-                    Pause
-                    break
-                }
-                Write-Output "Stored vCenter FQDNs:"
-                $credentials.vCenters | ForEach-Object { Write-Output $_.FQDN }
-                $fqdn = Read-Host "Enter the FQDN for the entry you want to remove"
+                $fqdn = Read-Host "Enter the vCenter FQDN to remove"
                 Remove-vCenterCredential -FQDN $fqdn -FilePath $FilePath
                 Pause
             }
             "4" {
                 $credentials = Get-vCenterCredentialStore -FilePath $FilePath
                 if ($credentials.vCenters -and $credentials.vCenters.Count -gt 0) {
-                    Write-Output "Stored vCenter Credential Entries:"
+                    Write-Output "`nStored vCenter FQDNs:"
                     $credentials.vCenters | ForEach-Object { Write-Output $_.FQDN }
                 } else {
                     Write-Warning "No vCenter entries found."
                 }
                 Pause
             }
-            "5" {
-                Write-Output "Exiting Credential Manager..."
-                return
-            }
+            "5" { return }
             default {
-                Write-Warning "Invalid choice. Please select a valid option."
+                Write-Warning "Invalid choice."
+                Pause
+            }
+        }
+    } while ($true)
+}
+
+function Show-NetAppMenu {
+    param([string]$FilePath)
+
+    do {
+        Clear-Host
+        Write-Output "============================="
+        Write-Output "   NetApp Credential Manager"
+        Write-Output "============================="
+        Write-Output "1. Add NetApp cluster credentials"
+        Write-Output "2. Modify NetApp credentials"
+        Write-Output "3. Remove NetApp credentials"
+        Write-Output "4. View NetApp entries"
+        Write-Output "5. Back to main menu"
+        Write-Output "====================="
+        $choice = Read-Host "Select an option (1-5)"
+
+        switch ($choice) {
+            "1" {
+                $fqdn = Read-Host "Enter the NetApp cluster FQDN"
+                $adminCred = Get-Credential -Message "Enter NetApp Cluster Admin Credentials"
+                Add-NetAppCredential -FQDN $fqdn -AdminCred $adminCred -FilePath $FilePath
+                Pause
+            }
+            "2" {
+                $fqdn = Read-Host "Enter the NetApp cluster FQDN to modify"
+                $newAdminCred = Get-Credential -Message "Enter new NetApp Admin Credentials"
+                Update-NetAppCredential -FQDN $fqdn -FilePath $FilePath -NewAdminCred $newAdminCred
+                Pause
+            }
+            "3" {
+                $fqdn = Read-Host "Enter the NetApp cluster FQDN to remove"
+                Remove-NetAppCredential -FQDN $fqdn -FilePath $FilePath
+                Pause
+            }
+            "4" {
+                $credentials = Get-NetAppCredentialStore -FilePath $FilePath
+                if ($credentials.netappClusters -and $credentials.netappClusters.Count -gt 0) {
+                    Write-Output "`nStored NetApp Clusters:"
+                    $credentials.netappClusters | ForEach-Object { Write-Output $_.FQDN }
+                } else {
+                    Write-Warning "No NetApp entries found."
+                }
+                Pause
+            }
+            "5" { return }
+            default {
+                Write-Warning "Invalid choice."
                 Pause
             }
         }
@@ -349,4 +518,6 @@ function Invoke-CredentialManager {
     Show-CredentialMenu -FilePath $FilePath
 }
 
-Export-ModuleMember -Function Invoke-CredentialManager, Add-vCenterCredential, Update-vCenterCredential, Remove-vCenterCredential, Get-vCenterCredential, Get-vCenterCredentialStore
+Export-ModuleMember -Function Invoke-CredentialManager, 
+    Add-vCenterCredential, Update-vCenterCredential, Remove-vCenterCredential, Get-vCenterCredential, Get-vCenterCredentialStore,
+    Add-NetAppCredential, Get-NetAppCredential, Update-NetAppCredential, Remove-NetAppCredential, Get-NetAppCredentialStore

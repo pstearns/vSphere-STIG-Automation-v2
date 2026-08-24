@@ -10,6 +10,9 @@ if (Test-Path "/usr/share/stigs/orchestration_overlay") {
     $Script:OverlayRoot = (Resolve-Path "$PSScriptRoot/..").Path
 }
 
+# Add this back to suppress PowerCLI stdout pollution:
+$WarningPreference = 'SilentlyContinue'
+
 # Load Dependencies and Workers dynamically from the Overlay Root
 Import-Module powershell-yaml -Global -Force -ErrorAction Stop 
 Import-Module (Join-Path $Script:OverlayRoot "modules/CredentialManagement.psm1") -Global -Force -ErrorAction Stop
@@ -119,8 +122,8 @@ function Get-StigInventory {
         if ($getEsxi -or $getVm) {
             try {
                 Write-Verbose "Connecting to PowerCLI for $vCenterFQDN to enumerate Hosts/VMs..."
-                Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false -Scope Session | Out-Null
-                Connect-VIServer -Server $vCenterFQDN -User $adminUser -Password $adminPass -Force -ErrorAction Stop | Out-Null
+                Set-PowerCLIConfiguration -DefaultVIServerMode Multiple -InvalidCertificateAction Ignore -Confirm:$false -Scope User | Out-Null
+               $InventoryConnection = Connect-VIServer -Server $vCenterFQDN -User $adminUser -Password $adminPass -Force -ErrorAction Stop
                 
                 if ($getEsxi) {
                     $EsxiReportDir = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/ESXi"
@@ -159,7 +162,7 @@ function Get-StigInventory {
                     }
                 }
 
-                Disconnect-VIServer -Server $vCenterFQDN -Confirm:$false | Out-Null
+                Disconnect-VIServer -Server $InventoryConnection -Confirm:$false | Out-Null
             } catch {
                 Write-StigLog -Message "Failed to retrieve ESXi/VM inventory from ${vCenterFQDN}: $($_.Exception.Message)" -Severity ERROR -Source "Inventory"
             }

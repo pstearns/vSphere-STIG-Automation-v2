@@ -1,0 +1,18 @@
+# NetApp Target Configuration
+# All non-credential settings for NetApp clusters go here.
+
+collection_id: 16
+
+netapp_targets:
+  - fqdn: "huarnac.niprpnp.army.mil"
+    enabled: true
+    port: 22
+    description: "HUARNAC"
+    inspec_profile: "netapp/inspec"
+
+  # Example of a disabled / future target
+  # - fqdn: "netapp-dr.example.mil"
+  #   enabled: false
+  #   port: 22
+  #   description: "DR NetApp cluster"
+  #   inspec_profile: "netapp/inspec"

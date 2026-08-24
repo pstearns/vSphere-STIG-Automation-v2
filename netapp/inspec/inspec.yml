@@ -1,0 +1,30 @@
+name: netapp_ontap_dsc_9x_stig
+title: NetApp ONTAP DSC 9.x STIG InSpec Profile
+maintainer: Department of War Automation Team
+copyright: Department of War
+copyright_email: automation@army.mil
+license: Apache-2.0
+summary: InSpec profile for validating NetApp ONTAP DSC 9.x against DISA STIG requirements
+version: 0.1.0
+inspec_version: '>= 6.0'
+
+inputs:
+  - name: ontap_targets
+    type: array
+    description: List of ONTAP cluster management IPs or hostnames
+    value: []
+
+  - name: ssh_user
+    type: string
+    description: SSH username with sufficient privileges
+    value: ''
+
+  - name: ssh_key_file
+    type: string
+    description: Path to SSH private key
+    value: ''
+
+  - name: answers_file
+    type: string
+    description: Path to answers.yml containing manual designations
+    value: '../../conf/answers.yml'
