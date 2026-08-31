@@ -1,180 +1,106 @@
 # =========================================================================
 # MODULE: Invoke-NetAppAudit.psm1
-# DESCRIPTION: NetApp ONTAP STIG Audit Worker.
-#              Loads targets from inputs.yml, retrieves credentials via
-#              CredentialManagement.psm1, and executes InSpec profile.
+# DESCRIPTION: Main orchestrator for the NetApp STIG workflow
 # =========================================================================
 
-if (Test-Path "/usr/share/stigs/orchestration_overlay") {
-    $Script:OverlayRoot = "/usr/share/stigs/orchestration_overlay"
-} else {
-    $Script:OverlayRoot = (Resolve-Path "$PSScriptRoot/..").Path
+$ThisModuleFolder = $PSScriptRoot                           # /.../netapp/modules
+$ProjectRoot      = Split-Path -Parent $ThisModuleFolder    # /.../netapp
+
+Write-Verbose "ThisModuleFolder : $ThisModuleFolder"
+Write-Verbose "ProjectRoot       : $ProjectRoot"
+
+# === Import modules from TWO locations ===
+try {
+    # 1. Shared modules from the parent orchestration_overlay/modules folder
+    $ParentModulesPath = Join-Path (Split-Path -Parent $ProjectRoot) "modules"
+
+    if (Test-Path (Join-Path $ParentModulesPath "globalFunctions.psm1")) {
+        Import-Module (Join-Path $ParentModulesPath "globalFunctions.psm1")      -Global -Force -ErrorAction Stop
+        Import-Module (Join-Path $ParentModulesPath "CredentialManagement.psm1") -Global -Force -ErrorAction Stop
+    } else {
+        throw "Could not find globalFunctions.psm1 in $ParentModulesPath"
+    }
+
+    # 2. NetApp helper from the same folder as this module
+    Import-Module (Join-Path $ThisModuleFolder "NetAppStigHelper.psm1") -Global -Force -ErrorAction Stop
+
+}
+catch {
+    Write-Error "Failed to import required modules."
+    Write-Error $_.Exception.Message
+    return
 }
 
-Import-Module (Join-Path $Script:OverlayRoot "modules/CredentialManagement.psm1") -Global -Force -ErrorAction Stop
-Import-Module (Join-Path $Script:OverlayRoot "modules/globalFunctions.psm1") -Global -Force -ErrorAction Stop
+# =========================================================================
+# MAIN FUNCTION
+# =========================================================================
 
-<#
-.SYNOPSIS
-    Loads enabled NetApp targets from netapp/conf/inputs.yml.
-    Also returns the NetApp-specific Collection ID if defined.
-#>
-function Get-NetAppTargets {
-    [CmdletBinding()]
-    param ([string]$OverlayRoot = $Script:OverlayRoot)
-
-    $InputsPath = Join-Path $OverlayRoot "netapp/conf/inputs.yml"
-    if (-not (Test-Path $InputsPath)) {
-        Write-StigLog -Message "NetApp inputs.yml not found at $InputsPath" -Severity ERROR -Source "NetAppAudit"
-        return @{ Targets = @(); CollectionId = $null }
-    }
-
-    try {
-        $Inputs = Get-Content $InputsPath -Raw | ConvertFrom-Yaml -ErrorAction Stop
-    } catch {
-        Write-StigLog -Message "Failed to parse NetApp inputs.yml: $($_.Exception.Message)" -Severity ERROR -Source "NetAppAudit"
-        return @{ Targets = @(); CollectionId = $null }
-    }
-
-    $EnabledTargets = $Inputs.netapp_targets | Where-Object {
-        ($_.enabled -eq $true) -or ($_.enabled -eq "true")
-    }
-
-    # Read NetApp-specific Collection ID override (defaults to 16 if not present)
-    $CollectionId = if ($Inputs.collection_id) { [string]$Inputs.collection_id } else { "16" }
-
-    Write-StigLog -Message "Loaded $($EnabledTargets.Count) enabled NetApp target(s) | CollectionId: $CollectionId" -Severity INFO -Source "NetAppAudit"
-
-    return [PSCustomObject]@{
-        Targets      = $EnabledTargets
-        CollectionId = $CollectionId
-    }
-}
-
-<#
-.SYNOPSIS
-    Internal helper to retrieve NetApp credentials (avoids name collision).
-#>
-function Get-NetAppTargetCredential {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory = $true)][string]$FQDN,
-        [string]$FilePath = (Join-Path $Script:OverlayRoot "conf/.creds.json.encrypted")
-    )
-
-    try {
-        $Creds = Get-NetAppCredential -FQDN $FQDN -FilePath $FilePath -ErrorAction Stop
-
-        if ($null -eq $Creds) {
-            Write-StigLog -Message "No credentials found in vault for $FQDN" -Severity WARN -Source "NetAppAudit"
-            return $null
-        }
-
-        return [PSCustomObject]@{
-            AdminUser = $Creds.AdminCred.UserName
-            AdminPass = $Creds.AdminCred.GetNetworkCredential().Password
-        }
-    }
-    catch {
-        Write-StigLog -Message "Failed to retrieve credentials for $FQDN : $($_.Exception.Message)" -Severity ERROR -Source "NetAppAudit"
-        return $null
-    }
-}
-
-<#
-.SYNOPSIS
-    Main NetApp audit function. Executes InSpec against enabled targets using the ontap:// transport.
-#>
 function Invoke-NetAppAudit {
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $false)][array]$TargetList,
-        [string]$OverlayRoot = $Script:OverlayRoot
+        [string]$ProjectRoot = $Global:ProjectRoot
     )
 
-    Write-StigLog -Message "Starting NetApp InSpec Audit..." -Severity INFO -Source "NetAppAudit"
-
-    if (-not $TargetList) {
-        $TargetList = Get-NetAppTargets -OverlayRoot $OverlayRoot
+    if (-not $ProjectRoot) {
+        $ProjectRoot = Split-Path -Parent $PSScriptRoot
     }
 
-    if (-not $TargetList.Targets -or $TargetList.Targets.Count -eq 0) {
-        Write-StigLog -Message "No enabled NetApp targets found." -Severity WARN -Source "NetAppAudit"
-        return
+    Write-StigLog "Starting NetApp STIG Audit Workflow..." -Severity INFO -Source "NetAppOrchestrator"
+
+    $InputsPath = Join-Path $ProjectRoot "conf/inputs.yml"
+    if (-not (Test-Path $InputsPath)) {
+        Write-StigLog "inputs.yml not found at $InputsPath" -Severity ERROR -Source "NetAppOrchestrator"
+        return $null
+    }
+
+    $Inputs = Get-Content $InputsPath -Raw | ConvertFrom-Yaml
+    $EnabledTargets = @($Inputs.netapp_targets | Where-Object { 
+        $_.enabled -eq $true -or "$($_.enabled)".ToLower() -eq "true" 
+    })
+
+    if ($EnabledTargets.Count -eq 0) {
+        Write-StigLog "No enabled NetApp targets found in inputs.yml." -Severity WARN -Source "NetAppOrchestrator"
+        return $null
+    }
+
+    $CredentialFile = Join-Path $ProjectRoot "..\conf\.creds.json.encrypted"
+    if (-not (Test-Path $CredentialFile)) {
+        Write-StigLog "FATAL: Credential file not found at $CredentialFile" -Severity ERROR -Source "NetAppOrchestrator"
+        return $null
     }
 
     $DateStr = Get-Date -Format "yyyyMMdd"
-    $results = @()
+    $CompletedWorkflows = @()
 
-    foreach ($target in $TargetList.Targets) {
-        $fqdn = $target.fqdn
-        if ([string]::IsNullOrWhiteSpace($fqdn)) { continue }
+    foreach ($target in $EnabledTargets) {
+        $fqdn        = $target.fqdn
+        $clusterName = $target.cluster_name
+        if (-not $fqdn -or -not $clusterName) { continue }
 
-        Write-StigLog -Message "Processing NetApp target: $fqdn" -Severity INFO -Source "NetAppAudit"
+        Write-StigLog "--- Processing Target: $fqdn (Cluster: $clusterName) ---" -Severity INFO -Source "NetAppOrchestrator"
 
-        # Get credentials
-        $creds = Get-NetAppTargetCredential -FQDN $fqdn
+        $creds = Get-NetAppTargetCredential -FQDN $fqdn -CredentialFile $CredentialFile
         if (-not $creds) {
-            Write-StigLog -Message "Skipping $fqdn - no credentials available in vault." -Severity WARN -Source "NetAppAudit"
+            Write-StigLog "Skipping $fqdn - no credentials found." -Severity WARN -Source "NetAppOrchestrator"
             continue
         }
 
-        $username = $creds.AdminUser
-        $password = $creds.AdminPass
+        $result = Start-NetAppChecklistGeneration -TargetFQDN $fqdn `
+                                                  -ClusterName   $clusterName `
+                                                  -Credentials   $creds `
+                                                  -DateString    $DateStr `
+                                                  -ProjectRoot   $ProjectRoot
 
-        # Report directory structure (matches VMware pattern)
-        $shortName = $fqdn.Split('.')[0]
-        $ReportDir = Join-Path $OverlayRoot "reports/$DateStr/$shortName/NetApp"
-        if (-not (Test-Path $ReportDir)) {
-            New-Item -ItemType Directory -Path $ReportDir -Force | Out-Null
-        }
-
-        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-        $JsonOutput = Join-Path $ReportDir "$shortName`_NetApp_$timestamp.json"
-
-        # Build InSpec command using ontap:// transport (your custom Train gem)
-        $InSpecProfilePath = Join-Path $OverlayRoot "netapp/inspec"
-
-        Write-StigLog -Message "Executing InSpec profile against $fqdn using ontap:// transport..." -Severity INFO -Source "NetAppAudit"
-
-        try {
-            # Using argument array for clean execution on Photon OS / Linux PowerShell
-            $argList = @(
-                "exec",
-                $InSpecProfilePath,
-                "--target", "ontap://$username@$fqdn",
-                "--password", $password,
-                "--reporter", "cli",
-                "json:$JsonOutput"
-            )
-
-            $result = & inspec $argList 2>&1
-
-            if (Test-Path $JsonOutput) {
-                Write-StigLog -Message "InSpec scan completed successfully for $fqdn. Report: $JsonOutput" -Severity SUCCESS -Source "NetAppAudit"
-
-                $results += [PSCustomObject]@{
-                    TargetName     = $fqdn
-                    TargetType     = "NetApp"
-                    DisaComponent  = "NetApp ONTAP"
-                    ShortName      = $shortName
-                    DateStr        = $DateStr
-                    RawJsonFile    = $JsonOutput          # InSpec HDF/JSON output
-                    ReportDir      = $ReportDir
-                    Status         = "Completed"
-                }
-            } else {
-                Write-StigLog -Message "InSpec finished but no JSON report was created for $fqdn. Output: $result" -Severity WARN -Source "NetAppAudit"
-            }
-        }
-        catch {
-            Write-StigLog -Message "InSpec execution failed for ${fqdn}: $_" -Severity ERROR -Source "NetAppAudit"
+        if ($result) {
+            Write-StigLog "Successfully generated checklist for $fqdn" -Severity SUCCESS -Source "NetAppOrchestrator"
+            $CompletedWorkflows += $result
+        } else {
+            Write-StigLog "Workflow failed for $fqdn." -Severity ERROR -Source "NetAppOrchestrator"
         }
     }
 
-    Write-StigLog -Message "NetApp Audit cycle completed." -Severity INFO -Source "NetAppAudit"
-
-    return $results
+    Write-StigLog "NetApp STIG Audit completed." -Severity SUCCESS -Source "NetAppOrchestrator"
+    return $CompletedWorkflows
 }
 
-Export-ModuleMember -Function Invoke-NetAppAudit, Get-NetAppTargets
+Export-ModuleMember -Function Invoke-NetAppAudit

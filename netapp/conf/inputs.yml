@@ -3,16 +3,30 @@
 
 collection_id: 16
 
+account_last_resort: "nacadmin"
+
+syslog_servers:
+  - 139.231.125.151
+  - 139.231.126.50
+
+approved_ntp_servers:
+  - 139.231.1.11
+  - 139.231.125.150
+  - 139.231.126.100
+
+approved_ca_issuers:
+  - "NIPRPNP Root CA"
+
 netapp_targets:
   - fqdn: "huarnac.niprpnp.army.mil"
     enabled: true
     port: 22
-    description: "HUARNAC"
+    cluster_name: "HUARNAC"
     inspec_profile: "netapp/inspec"
 
   # Example of a disabled / future target
   # - fqdn: "netapp-dr.example.mil"
   #   enabled: false
   #   port: 22
-  #   description: "DR NetApp cluster"
+  #   cluster_name: "DR NetApp cluster"
   #   inspec_profile: "netapp/inspec"

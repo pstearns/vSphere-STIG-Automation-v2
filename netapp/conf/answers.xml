@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--****************************************************************************************
+NetApp ONTAP DSC 9.x Answer File
+This file is used by Get-FormattedAnswer to override status and inject comments
+for items that require manual review or site-specific justification.
+*****************************************************************************************-->
+<STIGComments Name="NetApp ONTAP DSC 9.x">
+  <STIG ID="NAOT-AC-000005">   
+    <AnswerKey Name="DEFAULT">
+      <ExpectedStatus>NotAFinding</ExpectedStatus>
+      <ValidationCode></ValidationCode>
+      <ValidTrueStatus>NotAFinding</ValidTrueStatus>
+      <ValidTrueComment xml:space="preserve">
+Verified: 'nacadmin' is the single local emergency account configured.
+Storage: Credentials are sealed in the physical unit safe.
+Audit: Safe contents are verified and contolled by the ISSO.
+      </ValidTrueComment>
+      <ValidFalseStatus></ValidFalseStatus>
+      <ValidFalseComment></ValidFalseComment>
+      <Reviewed></Reviewed>
+      <Frequency></Frequency>
+    </AnswerKey>
+  </STIG>
+  <STIG ID="NAOT-AC-000006">
+    <AnswerKey Name="DEFAULT">
+      <ExpectedStatus>NotAFinding</ExpectedStatus>
+      <ValidationCode></ValidationCode>
+      <ValidTrueStatus>NotAFinding</ValidTrueStatus>
+      <ValidTrueComment xml:space="preserve">
+The NetApp environment enforces administrator privileges based on defined roles.
+
+The authorized AD groups and their mapped ONTAP roles are documented and validated against Section 9.3 of the NetApp System Baseline, Security, and Inventory (SBSI)
+
+CyberARK PAM is implemented as the direct user-authentication intermediary, account and access management to USAICoE's Intelligence training networks, servers and systems. It provides MFA (token/encrypted password) for privilege users to elevate using a randomly generated encrypted OTP (not displayed to privileged users). CyberArk protects and tracks privileged accounts/users, with safeguards to reduce the insider threat by tracking intentional and unintentional malicious or negligent actions and prevent external threats/hackers from causing further network/system damage via network penetration by enforcing the principle of least privilege and data-at-rest with encrypted, hashed and salted passwords in deployment and in storage. References: STIG ID -V-246888, Regulatory resources NIST 800-63 Series AAL 1, 2 &amp; 3, DOD, ARMY 25-2, Cybersecurity and ARCYBER directives.
+      </ValidTrueComment>      
+      <ValidFalseStatus></ValidFalseStatus>
+      <Reviewed></Reviewed>
+      <Frequency></Frequency>
+    </AnswerKey>
+  </STIG>
+  <STIG ID="NAOT-AC-000009">
+    <AnswerKey Name="DEFAULT">
+      <ExpectedStatus>NotAFinding</ExpectedStatus>
+      <ValidationCode></ValidationCode>
+      <ValidTrueStatus>NotAFinding</ValidTrueStatus>
+      <ValidTrueComment xml:space="preserve">
+The NetApp environment prevents non-privileged users from executing privileged functions through centralized identity management and CyberArk session isolation.
+
+The authorized AD groups and their mapped ONTAP roles are documented and validated against Section 9.3 of the NetApp System Baseline, Security, and Inventory (SBSI)
+
+CyberARK PAM is implemented as the direct user-authentication intermediary, account and access management to USAICoE's Intelligence training networks, servers and systems. It provides MFA (token/encrypted password) for privilege users to elevate using a randomly generated encrypted OTP (not displayed to privileged users). CyberArk protects and tracks privileged accounts/users, with safeguards to reduce the insider threat by tracking intentional and unintentional malicious or negligent actions and prevent external threats/hackers from causing further network/system damage via network penetration by enforcing the principle of least privilege and data-at-rest with encrypted, hashed and salted passwords in deployment and in storage. References: STIG ID -V-246888, Regulatory resources NIST 800-63 Series AAL 1, 2 &amp; 3, DOD, ARMY 25-2, Cybersecurity and ARCYBER directives.
+      </ValidTrueComment>      
+      <ValidFalseStatus></ValidFalseStatus>
+      <Reviewed></Reviewed>
+      <Frequency></Frequency>
+    </AnswerKey>
+  </STIG>
+  <STIG ID="NAOT-IA-000003">
+    <AnswerKey Name="DEFAULT">
+      <ExpectedStatus>Not_Reviewed</ExpectedStatus>
+      <ValidationCode></ValidationCode>
+      <ValidTrueStatus>Not_Applicable</ValidTrueStatus>
+      <ValidTrueComment xml:space="preserve">
+SNMP is disabled on this storage system. 
+Per the STIG check text, since snmp.enable and snmp.san.enable options are set to off, then SNMP is not enabled and this requirement is not applicable.
+      </ValidTrueComment>
+      <ValidFalseStatus></ValidFalseStatus>
+      <ValidFalseComment></ValidFalseComment>
+      <Reviewed></Reviewed>
+      <Frequency></Frequency>
+    </AnswerKey>
+  </STIG>
+  <STIG ID="NAOT-CM-000001">
+    <AnswerKey Name="DEFAULT">
+      <ExpectedStatus>Not_Reviewed</ExpectedStatus>
+      <ValidationCode></ValidationCode>
+      <ValidTrueStatus>NotAFinding</ValidTrueStatus>
+      <ValidTrueComment xml:space="preserve">
+The NetApp environment provide logical access restrictions associated with changes to device configuration through centralized identity management and CyberArk session isolation.
+
+The authorized AD groups and their mapped ONTAP roles are documented and validated against Section 9.3 of the NetApp System Baseline, Security, and Inventory (SBSI)
+
+CyberARK PAM is implemented as the direct user-authentication intermediary, account and access management to USAICoE's Intelligence training networks, servers and systems. It provides MFA (token/encrypted password) for privilege users to elevate using a randomly generated encrypted OTP (not displayed to privileged users). CyberArk protects and tracks privileged accounts/users, with safeguards to reduce the insider threat by tracking intentional and unintentional malicious or negligent actions and prevent external threats/hackers from causing further network/system damage via network penetration by enforcing the principle of least privilege and data-at-rest with encrypted, hashed and salted passwords in deployment and in storage. References: STIG ID -V-246888, Regulatory resources NIST 800-63 Series AAL 1, 2 &amp; 3, DOD, ARMY 25-2, Cybersecurity and ARCYBER directives.
+      </ValidTrueComment>
+      <ValidFalseStatus></ValidFalseStatus>
+      <ValidFalseComment></ValidFalseComment>
+      <Reviewed></Reviewed>
+      <Frequency></Frequency>
+    </AnswerKey>
+  </STIG>
+</STIGComments>

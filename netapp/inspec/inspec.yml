@@ -28,3 +28,8 @@ inputs:
     type: string
     description: Path to answers.yml containing manual designations
     value: '../../conf/answers.yml'
+
+  - name: account_last_resort
+    description: "The official username for the local account of last resort."
+    type: String
+    value: "admin" # Default value if no input file is provided
