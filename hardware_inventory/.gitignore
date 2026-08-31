@@ -1,0 +1,8 @@
+logs/
+*.log
+reports/
+*.csv
+secure/
+*.xml
+*.key
+*.enc
