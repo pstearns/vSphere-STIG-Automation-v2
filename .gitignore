@@ -44,3 +44,12 @@ logs/
 *.clixml
 *.psc1
 *.pssc
+
+# Exclude sensitive keys and encrypted credentials
+conf/*.key
+conf/*.encrypted
+conf/*.enc
+
+# Exclude logs
+logs/
+*.log

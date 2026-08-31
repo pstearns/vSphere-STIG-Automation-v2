@@ -1,0 +1,14 @@
+{
+  "SmtpServer": "139.231.126.109",
+  "Port": 25,
+  "From": "stig-alerts@niprpnp.army.mil",
+  "To": [
+    "peter.j.stearns.ctr@army.mil",
+    "steve.m.osborne.ctr@army.mil",
+    "joshua.m.martin54.ctr@army.mil",
+    "joshua.k.murrell.ctr@army.mil",
+    "cooper.d.delay.ctr@army.mil",
+    "steven.c.kron.ctr@army.mil"
+  ],
+  "EnableSsl": false
+}
