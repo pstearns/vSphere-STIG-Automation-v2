@@ -24,6 +24,24 @@ netapp_targets:
     cluster_name: "HUARNAC"
     inspec_profile: "netapp/inspec"
 
+  - fqdn: "huafnac.niprpnp.army.mil"
+    enabled: true
+    port: 22
+    cluster_name: "HUAFNAC"
+    inspec_profile: "netapp/inspec"
+  
+  - fqdn: "ltsnac.niprpnp.army.mil"
+    enabled: true
+    port: 22
+    cluster_name: "LTSNAC"
+    inspec_profile: "netapp/inspec"
+  
+  - fqdn: "huagnac.niprpnp.army.mil"
+    enabled: true
+    port: 22
+    cluster_name: "HUAGNAC"
+    inspec_profile: "netapp/inspec"
+
   # Example of a disabled / future target
   # - fqdn: "netapp-dr.example.mil"
   #   enabled: false

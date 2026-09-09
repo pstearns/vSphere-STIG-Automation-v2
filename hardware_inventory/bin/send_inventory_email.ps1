@@ -93,7 +93,5 @@ try {
     Write-Host "[INFO] Inventory email ($Status) successfully dispatched to: $recipientList"
 } catch {
     Write-Error "[ERROR] Failed to dispatch email: $($_.Exception.Message)"
-    e
-
-xit 1
+    exit 1
 }

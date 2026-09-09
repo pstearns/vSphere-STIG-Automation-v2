@@ -365,9 +365,75 @@ function Remove-NetAppCredential {
     return $true
 }
 
+# ====================================
+# Region: F5 BIG-IP Credential Functions
+# ====================================
+
+function Get-F5CredentialStore {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$FilePath)
+    
+    $credentials = Import-CredentialFile -FilePath $FilePath
+    if ($credentials -is [PSCustomObject]) {
+        $credentials = $credentials | ConvertTo-Json -Depth 10 | ConvertFrom-Json -AsHashtable
+    }
+    if (-not $credentials) { $credentials = @{} }
+    if (-not $credentials.ContainsKey('f5Devices')) {
+        $credentials['f5Devices'] = @()
+    }
+    return $credentials
+}
+
+function Set-F5CredentialStore {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][PSObject]$Credentials, [Parameter(Mandatory)][string]$FilePath)
+    Export-CredentialFile -Data $Credentials -FilePath $FilePath
+}
+
+function Add-F5Credential {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$FQDN,
+        [Parameter(Mandatory)][PSCredential]$AdminCred,
+        [Parameter(Mandatory)][string]$FilePath
+    )
+    $credentials = Get-F5CredentialStore -FilePath $FilePath
+    $existing = $credentials.f5Devices | Where-Object { $_.FQDN -eq $FQDN }
+    if ($existing) {
+        Write-Output "An F5 credential entry for '$FQDN' already exists."
+        return $false
+    }
+
+    $credentials.f5Devices += @{
+        FQDN      = $FQDN
+        AdminCred = ConvertTo-StorableCredential -Cred $AdminCred
+    }
+    Set-F5CredentialStore -Credentials $credentials -FilePath $FilePath
+    Write-Output "New F5 credential entry for '$FQDN' safely encrypted and added to vault."
+    return $true
+}
+
+function Get-F5Credential {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$FQDN, [Parameter(Mandatory)][string]$FilePath)
+    
+    $credentials = Get-F5CredentialStore -FilePath $FilePath
+    $entry = $credentials.f5Devices | Where-Object { $_.FQDN -eq $FQDN }
+    if ($entry) {
+        $adminCredential = New-Object PSCredential $entry.AdminCred.UserName, (ConvertTo-SecureString $entry.AdminCred.Password -AsPlainText -Force)
+        return [PSCustomObject]@{
+            FQDN      = $entry.FQDN
+            AdminCred = $adminCredential
+        }
+    }
+    Write-Warning "No F5 credential entry found for '$FQDN'."
+    return $null
+}
+
 # ================================
 # Region: Menu / Interactive Mode
 # ================================
+
 function Show-CredentialMenu {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$FilePath)
@@ -379,14 +445,16 @@ function Show-CredentialMenu {
         Write-Output "============================="
         Write-Output "1. Manage vCenter Credentials"
         Write-Output "2. Manage NetApp Credentials"
-        Write-Output "3. Exit"
-        Write-Output "====================="
-        $choice = Read-Host "Select an option (1-3)"
+        Write-Output "3. Manage F5 BIG-IP Credentials"
+        Write-Output "4. Exit"
+        Write-Output "============================="
+        $choice = Read-Host "Select an option (1-4)"
 
         switch ($choice) {
             "1" { Show-VCenterMenu -FilePath $FilePath }
             "2" { Show-NetAppMenu -FilePath $FilePath }
-            "3" {
+            "3" { Show-F5Menu -FilePath $FilePath }
+            "4" {
                 Write-Output "Exiting Credential Manager..."
                 return
             }
@@ -411,7 +479,7 @@ function Show-VCenterMenu {
         Write-Output "3. Remove vCenter credentials"
         Write-Output "4. View vCenter entries"
         Write-Output "5. Back to main menu"
-        Write-Output "====================="
+        Write-Output "============================="
         $choice = Read-Host "Select an option (1-5)"
 
         switch ($choice) {
@@ -468,7 +536,7 @@ function Show-NetAppMenu {
         Write-Output "3. Remove NetApp credentials"
         Write-Output "4. View NetApp entries"
         Write-Output "5. Back to main menu"
-        Write-Output "====================="
+        Write-Output "============================="
         $choice = Read-Host "Select an option (1-5)"
 
         switch ($choice) {
@@ -508,6 +576,59 @@ function Show-NetAppMenu {
     } while ($true)
 }
 
+function Show-F5Menu {
+    param([string]$FilePath)
+
+    do {
+        Clear-Host
+        Write-Output "============================="
+        Write-Output "   F5 BIG-IP Credential Manager"
+        Write-Output "============================="
+        Write-Output "1. Add F5 BIG-IP credentials"
+        Write-Output "2. Modify F5 BIG-IP credentials"
+        Write-Output "3. Remove F5 BIG-IP credentials"
+        Write-Output "4. View F5 BIG-IP entries"
+        Write-Output "5. Back to main menu"
+        Write-Output "============================="
+        $choice = Read-Host "Select an option (1-5)"
+
+        switch ($choice) {
+            "1" {
+                $fqdn = Read-Host "Enter the F5 BIG-IP FQDN (e.g. huarf5ltm.niprpnp.army.mil)"
+                $adminCred = Get-Credential -Message "Enter F5 BIG-IP Admin Credentials"
+                Add-F5Credential -FQDN $fqdn -AdminCred $adminCred -FilePath $FilePath
+                Pause
+            }
+            "2" {
+                $fqdn = Read-Host "Enter the F5 BIG-IP FQDN to modify"
+                $newAdminCred = Get-Credential -Message "Enter new F5 BIG-IP Admin Credentials"
+                Update-F5Credential -FQDN $fqdn -FilePath $FilePath -NewAdminCred $newAdminCred
+                Pause
+            }
+            "3" {
+                $fqdn = Read-Host "Enter the F5 BIG-IP FQDN to remove"
+                Remove-F5Credential -FQDN $fqdn -FilePath $FilePath
+                Pause
+            }
+            "4" {
+                $credentials = Get-F5CredentialStore -FilePath $FilePath
+                if ($credentials.f5Devices -and $credentials.f5Devices.Count -gt 0) {
+                    Write-Output "`nStored F5 BIG-IP Devices:"
+                    $credentials.f5Devices | ForEach-Object { Write-Output $_.FQDN }
+                } else {
+                    Write-Warning "No F5 BIG-IP entries found."
+                }
+                Pause
+            }
+            "5" { return }
+            default {
+                Write-Warning "Invalid choice."
+                Pause
+            }
+        }
+    } while ($true)
+}
+
 # ======================
 # Region: Main Entry Point
 # ======================
@@ -520,4 +641,5 @@ function Invoke-CredentialManager {
 
 Export-ModuleMember -Function Invoke-CredentialManager, 
     Add-vCenterCredential, Update-vCenterCredential, Remove-vCenterCredential, Get-vCenterCredential, Get-vCenterCredentialStore,
-    Add-NetAppCredential, Get-NetAppCredential, Update-NetAppCredential, Remove-NetAppCredential, Get-NetAppCredentialStore
+    Add-NetAppCredential, Get-NetAppCredential, Update-NetAppCredential, Remove-NetAppCredential, Get-NetAppCredentialStore,
+    Add-F5Credential, Get-F5Credential, Get-F5CredentialStore
