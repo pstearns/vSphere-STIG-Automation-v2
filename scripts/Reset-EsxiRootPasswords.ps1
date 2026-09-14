@@ -1,9 +1,21 @@
+<#
+.SYNOPSIS
+    ESXi Root Password Rotator with Automated STIG Verification & JSON Summary Output.
+    Path: /usr/share/stigs/orchestration_overlay/scripts/Reset-EsxiRootPasswords.ps1
+#>
 param (
     [string]$VaultPath = "/usr/share/stigs/orchestration_overlay/conf/.creds.json.encrypted",
-    [string]$ModulePath = "/usr/share/stigs/orchestration_overlay/modules/CredentialManagement.psm1"
+    [string]$ModulePath = "/usr/share/stigs/orchestration_overlay/modules/CredentialManagement.psm1",
+    [string]$SummaryOutputPath = "/usr/share/stigs/orchestration_overlay/reports/esxi_rotation_summary.json"
 )
 
 $ErrorActionPreference = "Stop"
+
+# Create reports directory if it doesn't exist
+$reportsDir = Split-Path -Path $SummaryOutputPath -Parent
+if (-not (Test-Path $reportsDir)) {
+    New-Item -ItemType Directory -Path $reportsDir -Force | Out-Null
+}
 
 # 1. Ignore untrusted SSL certificates
 if (Get-Module -ListAvailable -Name VMware.PowerCLI) {
@@ -12,7 +24,8 @@ if (Get-Module -ListAvailable -Name VMware.PowerCLI) {
 
 # 2. Import Credential Management Module
 if (-not (Test-Path $ModulePath)) {
-    throw "CredentialManagement module not found at: $ModulePath"
+    Write-Error "CredentialManagement module not found at: $ModulePath"
+    [System.Environment]::Exit(1)
 }
 Import-Module $ModulePath -Force
 
@@ -27,16 +40,23 @@ $VC_list = @(
 )
 
 $overallSuccess = $true
+$vCenterReportList = @()
+$totalTargetsScanned = 0
 
 foreach ($VC in $VC_list) {
     Write-Host "`n========================================================"
     Write-Host "[INFO] Processing vCenter: ${VC}"
     Write-Host "========================================================"
 
-    # Retrieve decrypted vCenter credentials (AdminCred & EsxiCred)
+    # Default metrics for this vCenter
+    $vCenterStatus = "SUCCESS"
+    $targetsScanned = 0
+
+    # Retrieve decrypted vCenter credentials
     $vcEntry = Get-vCenterCredential -FQDN $VC -FilePath $VaultPath
     if (-not $vcEntry -or -not $vcEntry.AdminCred -or -not $vcEntry.EsxiCred) {
         Write-Warning "Skipping ${VC} - Missing AdminCred or EsxiCred in vault ($VaultPath)."
+        $overallSuccess = $false
         continue
     }
 
@@ -49,11 +69,25 @@ foreach ($VC in $VC_list) {
     } catch {
         Write-Warning "[WARN] Could not connect to ${VC}: $($_.Exception.Message)"
         $overallSuccess = $false
+        $vCenterReportList += [PSCustomObject]@{
+            Name           = $VC
+            Scope          = "ESXi Root Password Rotation"
+            Status         = "FAILED"
+            TargetsScanned = 0
+            Cat1Open       = 0
+            Cat2Open       = 0
+            Cat3Open       = 0
+            TotalOpen      = 0
+        }
         continue
     }
 
     $vmhosts = Get-VMHost | Sort-Object Name
-    Write-Host "[INFO] Found $($vmhosts.Count) ESXi host(s) managed by ${VC}"
+    $targetsScanned = $vmhosts.Count
+    $totalTargetsScanned += $targetsScanned
+    Write-Host "[INFO] Found $targetsScanned ESXi host(s) managed by ${VC}"
+
+    $vCenterHostsSuccess = $true
 
     foreach ($vmhost in $vmhosts) {
         Write-Host "`n---> Rotating root password on ESXi Host: $($vmhost.Name)"
@@ -78,18 +112,49 @@ foreach ($VC in $VC_list) {
             Write-Host "[SUCCESS] Password rotated & STIG policies restored on $($vmhost.Name)"
         } catch {
             Write-Error "[ERROR] Failed password rotation on $($vmhost.Name): $($_.Exception.Message)"
-            # Ensure STIG settings are restored even if the rotation call failed
+            $overallSuccess = $false
+            $vCenterHostsSuccess = $false
+            # Ensure STIG settings are restored even if rotation failed
             try {
                 $vmhost | Get-AdvancedSetting -Name "Security.PasswordHistory" | Set-AdvancedSetting -Value "5" -Confirm:$false | Out-Null
                 $vmhost | Get-AdvancedSetting -Name "Security.PasswordMaxDays" | Set-AdvancedSetting -Value "90" -Confirm:$false | Out-Null
             } catch { }
-            $overallSuccess = $false
         }
+    }
+
+    if (-not $vCenterHostsSuccess) { $vCenterStatus = "FAILED" }
+
+    # Populate expected fields for send_alert.ps1
+    $vCenterReportList += [PSCustomObject]@{
+        Name           = $VC
+        Scope          = "ESXi Root Password Rotation"
+        Status         = $vCenterStatus
+        TargetsScanned = $targetsScanned
+        Cat1Open       = 0
+        Cat2Open       = 0
+        Cat3Open       = 0
+        TotalOpen      = 0
     }
 
     Disconnect-VIServer $connection -Confirm:$false
 }
 
+# --- Generate JSON Summary for send_alert.ps1 Compliance ---
+$summaryObj = [PSCustomObject]@{
+    TotalTargetsScanned = $totalTargetsScanned
+    Cat1Open            = 0
+    Cat2Open            = 0
+    Cat3Open            = 0
+    vCenters            = $vCenterReportList
+}
+
+$summaryObj | ConvertTo-Json -Depth 4 | Out-File -FilePath $SummaryOutputPath -Encoding utf8
+
+# Explicit exit status mapping
 if (-not $overallSuccess) {
-    throw "One or more ESXi hosts encountered errors during password rotation."
+    Write-Error "[FATAL] Script completed with active execution failures."
+    [System.Environment]::Exit(1)
+} else {
+    Write-Host "[SUCCESS] All password rotation activities finished cleanly."
+    [System.Environment]::Exit(0)
 }

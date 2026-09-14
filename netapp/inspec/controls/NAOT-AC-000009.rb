@@ -21,30 +21,31 @@ Configure non-privileged users with "security login create -user-or-group-name <
   tag cci: ['CCI-002235']
   tag nist: ['AC-6 (10)']
 
-cmd = ontap_command('rows 0; security login role show -cmddirname DEFAULT')
+  cmd = ontap_command('rows 0; security login role show -cmddirname DEFAULT')
 
-describe 'Non-Privileged Role Restrictions' do
-  let(:authorized_admin_roles) do
-    # Allowed predefined and custom cluster-admin roles with DEFAULT 'all'
-    ['admin', 'admin-no-fsa']
-  end
+  describe 'Non-Privileged Role Restrictions' do
+    let(:authorized_admin_roles) do
+      # Allowed predefined and custom cluster-admin roles with DEFAULT 'all'
+      ['admin', 'admin-no-fsa']
+    end
 
-  let(:unauthorized_default_all_roles) do
-    default_all_roles = cmd.stdout.scan(/(?:^\S+|\s+)\s+(\S+)\s+DEFAULT\s+all\b/i).flatten.uniq
-    default_all_roles.reject { |role| authorized_admin_roles.include?(role) }
-  end
+    let(:unauthorized_default_all_roles) do
+      default_all_roles = cmd.stdout.scan(/(?:^\S+|\s+)\s+(\S+)\s+DEFAULT\s+all\b/i).flatten.uniq
+      default_all_roles.reject { |role| authorized_admin_roles.include?(role) }
+    end
 
-  it 'must not grant unrestricted DEFAULT "all" access to non-admin roles' do
-    failure_message = "The following non-admin roles have excessive privileges with DEFAULT 'all' access: [#{unauthorized_default_all_roles.join(', ')}]"
-    expect(unauthorized_default_all_roles).to be_empty, failure_message
-  end
+    it 'must not grant unrestricted DEFAULT "all" access to non-admin roles' do
+      failure_message = "The following non-admin roles have excessive privileges with DEFAULT 'all' access: [#{unauthorized_default_all_roles.join(', ')}]"
+      expect(unauthorized_default_all_roles).to be_empty, failure_message
+    end
 
-  describe 'NOT A CHECK: FOR MANUAL REVIEW OF OUTPUT' do
-    skip <<~EVIDENCE 
+    describe 'NOT A CHECK: FOR MANUAL REVIEW OF OUTPUT' do
+      skip <<~EVIDENCE 
 
-      --- RAW OUTPUT FOR MANUAL VERIFICATION ---
-      #{cmd}
-      #{cmd.stdout.encode('UTF-8')}
-    EVIDENCE
+        --- RAW OUTPUT FOR MANUAL VERIFICATION ---
+        #{cmd}
+        #{cmd.stdout.encode('UTF-8')}
+      EVIDENCE
+    end
   end
 end

@@ -1,0 +1,43 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# ------------------------------------------------------------------------------
+# STIG Automation - 1st Saturday of Every Month (Staggered Execution)
+# ------------------------------------------------------------------------------
+# VCSA Audit (01:00 AM)
+0 1 1-7 * * [ "$(date +\%u)" -eq 6 ] && /usr/share/stigs/orchestration_overlay/bin/run-cron-vcsa.sh
+
+# ESXi Audit (03:00 AM)
+0 3 1-7 * * [ "$(date +\%u)" -eq 6 ] && /usr/share/stigs/orchestration_overlay/bin/run-cron-esxi.sh
+
+# VM Audit (05:00 AM)
+0 5 1-7 * * [ "$(date +\%u)" -eq 6 ] && /usr/share/stigs/orchestration_overlay/bin/run-cron-vm.sh
+
+# NetApp Audit (07:00 AM)
+0 7 1-7 * * [ "$(date +\%u)" -eq 6 ] && /usr/share/stigs/orchestration_overlay/netapp/bin/run_netapp_stig.sh
+
+# ==============================================================================
+# Hardware Inventory - Quarterly (1st Saturday of Jan, Apr, Jul, Oct)
+# ==============================================================================
+# ESXi Host Serial Numbers & IPs (09:00 AM)
+0 9 1-7 1,4,7,10 * [ "$(date +\%u)" -eq 6 ] && /usr/share/stigs/orchestration_overlay/hardware_inventory/bin/run-inventory-esxi.sh
+
+# VM Serial Numbers & IPs (10:00 AM)
+0 10 1-7 1,4,7,10 * [ "$(date +\%u)" -eq 6 ] && /usr/share/stigs/orchestration_overlay/hardware_inventory/bin/run-inventory-vm.sh
+
+# ==============================================================================
+# Infrastructure Certificate Trackers - Quarterly (1st Saturday of Jan, Apr, Jul, Oct)
+# ==============================================================================
+# VMware vCenter & ESXi Certificate Health (11:00 AM)
+0 11 1-7 1,4,7,10 * [ "$(date +\%u)" -eq 6 ] && /usr/share/stigs/orchestration_overlay/cert_tracker/bin/run-cert-tracker-vmware.sh
+
+# NetApp ONTAP Cluster Certificate Health (12:00 PM)
+0 12 1-7 1,4,7,10 * [ "$(date +\%u)" -eq 6 ] && /usr/share/stigs/orchestration_overlay/cert_tracker/bin/run-cert-tracker-netapp.sh
+
+# F5 BIG-IP Certificate Tracker (01:00 PM)
+0 13 1-7 1,4,7,10 * [ "$(date +\%u)" -eq 6 ] && /usr/share/stigs/orchestration_overlay/cert_tracker/bin/run-cert-tracker-f5.sh
+
+# ==============================================================================
+# ESXi Root Password Rotation - Monthly (1st Saturday @ 04:00 AM)
+# ==============================================================================
+0 4 1-7 * * [ "$(date +\%u)" -eq 6 ] && /usr/share/stigs/orchestration_overlay/bin/run-cron-esxi-password-reset.sh

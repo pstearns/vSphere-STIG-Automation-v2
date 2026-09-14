@@ -1,7 +1,7 @@
 # NetApp Target Configuration
 # All non-credential settings for NetApp clusters go here.
 
-collection_id: 16
+collection_id: 6
 
 account_last_resort: "nacadmin"
 

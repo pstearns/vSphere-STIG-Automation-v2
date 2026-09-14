@@ -527,6 +527,9 @@ function Invoke-MultiVcsaOrchestration {
         Invoke-LogRetentionCleanup -LogDirectory (Join-Path $OverlayRoot "logs") -KeepDays 14
         
         Write-ElapsedTime -StartTime $StartTime -Message "Multi-VCSA Auditing Cycle Complete." -Source "VcsaOrch"
+
+        # Compile and send the final HTML report
+        Send-StigExecutionReport -JobName "VCSA_STIG_Audit" -DateStr $StartTime.ToString("yyyyMMdd") -vCenterList $ActiveTargets -Scope "VCSA" -OverlayRoot $OverlayRoot
     }
     catch {
         Write-StigLog -Message "VCSA Orchestrator Failed: $($_.Exception.Message)" -Severity ERROR -Source "VcsaOrch"
@@ -578,6 +581,8 @@ function Invoke-MultiEsxiOrchestration {
         
         # Automated log cleanup at end of full cycle
         Invoke-LogRetentionCleanup -LogDirectory (Join-Path $OverlayRoot "logs") -KeepDays 14
+
+        Send-StigExecutionReport -JobName "ESXI_STIG_Audit" -DateStr $StartTime.ToString("yyyyMMdd") -vCenterList $ActiveTargets -Scope "ESXi" -OverlayRoot $OverlayRoot -ExitCode $LASTEXITCODE
         
         Write-ElapsedTime -StartTime $StartTime -Message "Multi-ESXi Auditing Cycle Complete." -Source "EsxiOrch"
     }
@@ -631,6 +636,8 @@ function Invoke-MultiVmOrchestration {
         
         # Automated log cleanup at end of full cycle
         Invoke-LogRetentionCleanup -LogDirectory (Join-Path $OverlayRoot "logs") -KeepDays 14
+        
+        Send-StigExecutionReport -JobName "VM_STIG_Audit" -DateStr $StartTime.ToString("yyyyMMdd") -vCenterList $ActiveTargets -Scope "VMs" -OverlayRoot $OverlayRoot -ExitCode $LASTEXITCODE
         
         Write-ElapsedTime -StartTime $StartTime -Message "Multi-VM Auditing Cycle Complete." -Source "VmOrch"
     }
@@ -737,4 +744,105 @@ function Invoke-StigManSync {
     }
 }
 
-Export-ModuleMember -Function Get-StigInventory, Invoke-StigAudit, Format-StigChecklist, Invoke-MultiVcsaOrchestration, Invoke-MultiEsxiOrchestration, Invoke-MultiVmOrchestration, Invoke-MultiVMOrchestration, Invoke-StigManSync
+<#
+.SYNOPSIS
+    Compiles a summary of open STIG findings from generated CKL files for a given job run,
+    writes the summary to a JSON file, and dispatches the final HTML email report.
+#>
+function Send-StigExecutionReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$JobName,
+        [Parameter(Mandatory=$true)][string]$DateStr,
+        [Parameter(Mandatory=$true)][string[]]$vCenterList,
+        [string]$Scope = "Full Suite",
+        [int]$ExitCode = 0,
+        [string]$OverlayRoot = "/usr/share/stigs/orchestration_overlay"
+    )
+
+    $vCenterSummaries = @()
+    $totalCat1 = 0; $totalCat2 = 0; $totalCat3 = 0; $totalTargets = 0
+    $overallStatus = "SUCCESS"
+
+    foreach ($vCenterFQDN in $vCenterList) {
+        $vCenterShortName = ($vCenterFQDN -split '\.')[0].ToUpper()
+        $vCenterBaseDir   = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName"
+        
+        $vcCat1 = 0; $vcCat2 = 0; $vcCat3 = 0; $vcTargetCount = 0
+        $vcStatus = "SUCCESS"
+
+        if (Test-Path $vCenterBaseDir) {
+            $cklFiles = Get-ChildItem -Path $vCenterBaseDir -Filter "*.ckl" -Recurse
+            $vcTargetCount = $cklFiles.Count
+
+            foreach ($ckl in $cklFiles) {
+                try {
+                    [xml]$cklXml = Get-Content -Path $ckl.FullName -Raw
+                    $openVulns = $cklXml.CHECKLIST.STIGS.iSTIG.VULN | Where-Object { $_.STATUS -eq "Open" }
+                    
+                    foreach ($v in $openVulns) {
+                        $severityNode = $v.SelectNodes("STIG_DATA") | Where-Object { $_.SelectSingleNode("VULN_ATTRIBUTE").InnerText -eq "Severity" }
+                        $sev = if ($severityNode) { $severityNode.SelectSingleNode("ATTRIBUTE_DATA").InnerText } else { "medium" }
+
+                        switch ($sev.ToLower()) {
+                            "high"   { $vcCat1++ }
+                            "medium" { $vcCat2++ }
+                            "low"    { $vcCat3++ }
+                        }
+                    }
+                } catch {
+                    $vcStatus = "FAILED"
+                    $overallStatus = "FAILED"
+                }
+            }
+        } else {
+            $vcStatus = "FAILED"
+            $overallStatus = "FAILED"
+        }
+
+        $vcTotalOpen = $vcCat1 + $vcCat2 + $vcCat3
+        $totalCat1 += $vcCat1
+        $totalCat2 += $vcCat2
+        $totalCat3 += $vcCat3
+        $totalTargets += $vcTargetCount
+
+        $vCenterSummaries += [PSCustomObject]@{
+            Name           = $vCenterShortName
+            Scope          = $Scope
+            Status         = $vcStatus
+            TargetsScanned = $vcTargetCount
+            Cat1Open       = $vcCat1
+            Cat2Open       = $vcCat2
+            Cat3Open       = $vcCat3
+            TotalOpen      = $vcTotalOpen
+        }
+    }
+
+    $summaryObj = [PSCustomObject]@{
+        JobName             = $JobName
+        DateStr             = $DateStr
+        TotalTargetsScanned = $totalTargets
+        Cat1Open            = $totalCat1
+        Cat2Open            = $totalCat2
+        Cat3Open            = $totalCat3
+        vCenters            = $vCenterSummaries
+    }
+
+    # Save summary JSON
+    $summaryJsonDir  = Join-Path $OverlayRoot "reports/$DateStr"
+    if (-not (Test-Path $summaryJsonDir)) { New-Item -ItemType Directory -Path $summaryJsonDir -Force | Out-Null }
+    $summaryJsonPath = Join-Path $summaryJsonDir "stig_run_summary_${JobName}.json"
+    $summaryObj | ConvertTo-Json -Depth 5 | Set-Content -Path $summaryJsonPath -Force
+
+    # Trigger the universal mailer script
+    $mailScriptPath = Join-Path $OverlayRoot "bin/send_alert.ps1"
+    $logPath        = Join-Path $OverlayRoot "logs/${JobName}_trace.log"
+
+    if (Test-Path $mailScriptPath) {
+        & $mailScriptPath -JobName $JobName -LogPath $logPath -ExitCode $ExitCode -Status $overallStatus -SummaryJsonPath $summaryJsonPath
+    } else {
+        Write-StigLog -Message "Email alert script not found at $mailScriptPath. Skipping notification." -Severity WARN -Source "Orchestrator"
+    }
+}
+
+Export-ModuleMember -Function Get-StigInventory, Invoke-StigAudit, Format-StigChecklist, Invoke-MultiVcsaOrchestration, Invoke-MultiEsxiOrchestration, Invoke-MultiVmOrchestration, Invoke-MultiVMOrchestration, Invoke-StigManSync, Send-StigExecutionReport

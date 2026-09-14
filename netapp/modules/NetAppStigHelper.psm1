@@ -1,6 +1,12 @@
+# =========================================================================
+# MODULE: NetAppStigHelper.psm1
+# DESCRIPTION: Core helper functions for NetApp ONTAP STIG audits (FQDN & Short Name Flexible)
+# =========================================================================
+
 function Get-NetAppNetworkInfo {
     [CmdletBinding()]
     param(
+        [string]$TargetFQDN,
         [string]$ClusterName,
         [PSCustomObject]$Credentials,
         [string]$ProjectRoot
@@ -12,8 +18,6 @@ function Get-NetAppNetworkInfo {
     $tempInputFile = $null
 
     try {
-        Write-StigLog "Running discovery control 'GET-CLUSTER-MGMT-INFO' for cluster [$ClusterName]..." -Severity INFO -Source "NetAppHelper"
-
         $psc = $Credentials.AdminCred
         $InSpecProfilePath = Join-Path $ProjectRoot "inspec"
 
@@ -23,21 +27,35 @@ function Get-NetAppNetworkInfo {
 
         "cluster: '$ClusterName'" | Out-File -FilePath $tempInputFile -Encoding UTF8 -Force
 
-        $ArgumentList = @(
-            "exec",
-            $InSpecProfilePath,
-            "--target", "ontap://$($psc.UserName)@${ClusterName}",
-            "--password", $psc.GetNetworkCredential().Password,
-            "--controls", "GET-CLUSTER-MGMT-INFO",
-            "--input-file", $tempInputFile
-        )
+        $TargetsToTry = @()
+        if (-not [string]::IsNullOrEmpty($TargetFQDN)) { $TargetsToTry += $TargetFQDN }
+        if (-not [string]::IsNullOrEmpty($ClusterName) -and $ClusterName -ne $TargetFQDN) { $TargetsToTry += $ClusterName }
 
-        $discoveryOutput = & inspec $ArgumentList 2>&1
+        foreach ($ConnectTarget in $TargetsToTry) {
+            Write-StigLog "Running discovery control 'GET-CLUSTER-MGMT-INFO' for cluster [$ClusterName] using target [$ConnectTarget]..." -Severity INFO -Source "NetAppHelper"
 
-        foreach ($line in $discoveryOutput) {
-            if ($line -match 'IP Address\s*:\s*([\d\.]+)')      { $ipAddress  = $Matches[1] }
-            if ($line -match 'Home Port\s*:\s*([^\s]+)')        { $homePort   = $Matches[1] }
-            if ($line -match 'MAC Address:\s*([0-9a-fA-F:]+)')  { $macAddress = $Matches[1] }
+            $ArgumentList = @(
+                "exec",
+                $InSpecProfilePath,
+                "--target", "ontap://$($psc.UserName)@${ConnectTarget}",
+                "--password", $psc.GetNetworkCredential().Password,
+                "--controls", "GET-CLUSTER-MGMT-INFO",
+                #"--input", "cluster=${ClusterName}",
+                "--input-file", $tempInputFile
+            )
+
+            $discoveryOutput = & inspec $ArgumentList 2>&1
+
+            foreach ($line in $discoveryOutput) {
+                # FIXED: Ignored placeholder lines starting with 'Not', 'None', or similar patterns
+                if ($line -match 'IP Address\s*:\s*([\d\.]+)')      { $ipAddress  = $Matches[1] }
+                if ($line -match 'Home Port\s*:\s*([^Nn\s][^\s]*)') { $homePort   = $Matches[1] }
+                if ($line -match 'MAC Address:\s*([0-9a-fA-F:]+)')  { $macAddress = $Matches[1] }
+            }
+
+            if (-not [string]::IsNullOrEmpty($ipAddress) -and -not [string]::IsNullOrEmpty($macAddress)) {
+                break
+            }
         }
 
         Write-StigLog "Discovered → IP: [$ipAddress] | Home Port: [$homePort] | MAC: [$macAddress]" -Severity INFO -Source "NetAppHelper"
@@ -114,14 +132,16 @@ function Start-NetAppChecklistGeneration {
     $JsonOutput  = Join-Path $ReportDir "${ClusterName}_NetApp_InSpec-Results_${DateString}.json"
     $InSpecProfilePath = Join-Path $ProjectRoot "inspec"
 
-    $NetInfo = Get-NetAppNetworkInfo -ClusterName $ClusterName -Credentials $Credentials -ProjectRoot $ProjectRoot
+    $NetInfo = Get-NetAppNetworkInfo -TargetFQDN $TargetFQDN -ClusterName $ClusterName -Credentials $Credentials -ProjectRoot $ProjectRoot
 
     Write-StigLog "Running full InSpec STIG audit for ${TargetFQDN}. Log: ${LogOutput}" -Severity INFO -Source "NetAppHelper"
     $psc = $Credentials.AdminCred
 
+    $ExecTarget = if (-not [string]::IsNullOrEmpty($TargetFQDN)) { $TargetFQDN } else { $ClusterName }
+
     $ArgumentList = @(
         "exec", $InSpecProfilePath,
-        "--target", "ontap://$($psc.UserName)@${ClusterName}",
+        "--target", "ontap://$($psc.UserName)@${ExecTarget}",
         "--password", $psc.GetNetworkCredential().Password,
         "--input-file", $InputsPath,
         "--reporter", "json:${JsonOutput}"
@@ -171,7 +191,7 @@ function Start-NetAppChecklistGeneration {
         [xml]$findingsXml = $sanitizedFindings
 
         # Update ASSET block
-        $asset = $templateXml.CHECKLIST.ASSET
+        $asset             = $templateXml.CHECKLIST.ASSET
         $asset.ROLE        = "Member Server"
         $asset.ASSET_TYPE  = "Computing"
         $asset.MARKING     = "CUI"
@@ -289,12 +309,6 @@ function Start-NetAppChecklistGeneration {
     }
 }
 
-<#
-.SYNOPSIS
-    NetApp-native STIG Manager upload function.
-    Uses the collection_id already defined in the NetApp project's inputs.yml.
-    Fully decoupled from the VMware orchestration_overlay.
-#>
 function Invoke-NetAppStigManSync {
     [CmdletBinding()]
     param(
@@ -397,11 +411,6 @@ function Invoke-NetAppStigManSync {
     }
 }
 
-<#
-.SYNOPSIS
-    Helper to retrieve the NetApp collection_id from inputs.yml.
-    Exposed for external callers if needed.
-#>
 function Get-NetAppCollectionId {
     [CmdletBinding()]
     param([string]$ProjectRoot)

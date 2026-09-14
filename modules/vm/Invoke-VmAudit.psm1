@@ -13,14 +13,23 @@ function Invoke-VmAudit {
 
     Write-Host "[*] Initiating Parallel VM Audits for $($TargetList.Count) targets..." -ForegroundColor Cyan
 
+    # Ensure PowerCLI persistently ignores untrusted certificates for all threads and subprocesses
+    try {
+        Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false -Scope User | Out-Null
+    } catch {
+        Write-Warning "Could not configure PowerCLI certificate validation bypass: $_"
+    }
+
     $TargetList | ForEach-Object -Parallel {
         $Target = $_
         $OverlayRoot = $using:OverlayRoot
         
-        $GlobalFuncs = (Get-Content (Join-Path $OverlayRoot "modules/globalFunctions.psm1") -Raw) -replace "(?m)^Export-ModuleMember.*`$", ""
+        # FIXED: Robust Multiline regex to completely chop the Export-ModuleMember statements
+        $GlobalFuncs = (Get-Content (Join-Path $OverlayRoot "modules/globalFunctions.psm1") -Raw) -replace "(?ms)Export-ModuleMember.*", ""
         Invoke-Expression $GlobalFuncs
         
-        $VmHelpers = (Get-Content (Join-Path $OverlayRoot "modules/vm/VmHelpers.psm1") -Raw) -replace "(?m)^Export-ModuleMember.*`$", ""
+        # FIXED: Robust Multiline regex applied here as well
+        $VmHelpers = (Get-Content (Join-Path $OverlayRoot "modules/vm/VmHelpers.psm1") -Raw) -replace "(?ms)Export-ModuleMember.*", ""
         Invoke-Expression $VmHelpers
 
         Write-Host " -> [$($Target.Name)] Executing VM API Audit via vCenter..." -ForegroundColor DarkGray
@@ -43,22 +52,57 @@ function Invoke-VmAudit {
         $CustomApiProfilePath = Join-Path $OverlayRoot "custom_profiles/vm/inspec/api"
         $CustomApiRawOut      = Join-Path $RawJsonDir "$($Target.Name)_VM_CUSTOM_API_raw.json"
 
-        $b64AdminPass = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Target.AdminPass))
-        $InputArg = if (Test-Path $InputsFile) { "--input-file '$InputsFile'" } else { "" }
+        # -------------------------------------------------------------
+        # Phase 1: Base API Audit Natively (No shell escaping issues)
+        # -------------------------------------------------------------
+        # Securely build the process environment (avoids Bash string injection and fixes SSL)
+        $ProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $ProcessInfo.FileName = "cinc-auditor" # FIXED: Direct execution of cinc-auditor natively
+        $ProcessInfo.UseShellExecute = $false
+        $ProcessInfo.RedirectStandardOutput = $true
+        $ProcessInfo.RedirectStandardError = $true
         
-        # -------------------------------------------------------------
-        # Phase 1: Base API Audit
-        # -------------------------------------------------------------
-        $Cmd = "VISERVER='$($Target.vCenter)' VISERVER_USERNAME='$($Target.AdminUser)' VISERVER_PASSWORD=`"`$(echo '$b64AdminPass' | base64 -d)`" cinc-auditor exec '$ApiProfilePath' -t vmware:// $InputArg --input vmName=`"$($Target.Name)`" --reporter json:'$RawOut'"
-        $BashOutput = bash -c $Cmd 2>&1
+        # Inject credentials directly as process environment variables
+        $ProcessInfo.EnvironmentVariables["VISERVER"]          = $Target.vCenter
+        $ProcessInfo.EnvironmentVariables["VISERVER_USERNAME"] = $Target.AdminUser
+        $ProcessInfo.EnvironmentVariables["VISERVER_PASSWORD"] = $Target.AdminPass
+        $ProcessInfo.EnvironmentVariables["VISERVER_INSECURE"] = "true" 
+        $ProcessInfo.EnvironmentVariables["NO_COLOR"]          = "true" # FIXED: Prevents ANSI stream corruption
+        $ProcessInfo.EnvironmentVariables["HOME"]              = "/root" # FIXED: Resolves user gems in cron
+
+        # Execute Base API Natively (Passing arguments directly via ArgumentList)
+        $ApiArgs = @("exec", $ApiProfilePath, "-t", "vmware://", "--input", "vmName=$($Target.Name)", "--reporter", "json:$RawOut")
+        if (Test-Path $InputsFile) { $ApiArgs += @("--input-file", $InputsFile) }
+        
+        $ProcessInfo.ArgumentList.Clear()
+        foreach ($arg in $ApiArgs) { $ProcessInfo.ArgumentList.Add($arg) }
+
+        $Process = [System.Diagnostics.Process]::Start($ProcessInfo)
+        $ApiOutput = $Process.StandardOutput.ReadToEnd() + $Process.StandardError.ReadToEnd()
+        $Process.WaitForExit()
 
         # -------------------------------------------------------------
-        # Phase 2: Custom API Overlay Execution
+        # Phase 2: Custom API Overlay Execution Natively
         # -------------------------------------------------------------
         if (Test-Path (Join-Path $CustomApiProfilePath "inspec.yml")) {
             Write-Host " -> [$($Target.Name)] Executing Custom VM API Overlay..." -ForegroundColor DarkCyan
-            $CustomApiCmd = "VISERVER='$($Target.vCenter)' VISERVER_USERNAME='$($Target.AdminUser)' VISERVER_PASSWORD=`"`$(echo '$b64AdminPass' | base64 -d)`" cinc-auditor exec '$CustomApiProfilePath' -t vmware:// $InputArg --input vmName=`"$($Target.Name)`" --reporter json:'$CustomApiRawOut'"
-            $CustomBashOutput = bash -c $CustomApiCmd 2>&1
+            
+            $CustomApiArgs = @("exec", $CustomApiProfilePath, "-t", "vmware://", "--input", "vmName=$($Target.Name)", "--reporter", "json:$CustomApiRawOut")
+            if (Test-Path $InputsFile) { $CustomApiArgs += @("--input-file", $InputsFile) }
+            
+            $ProcessInfo.ArgumentList.Clear()
+            foreach ($arg in $CustomApiArgs) { $ProcessInfo.ArgumentList.Add($arg) }
+
+            $Process = [System.Diagnostics.Process]::Start($ProcessInfo)
+            $CustomApiOutput = $Process.StandardOutput.ReadToEnd() + $Process.StandardError.ReadToEnd()
+            $Process.WaitForExit()
+            
+            if (-not (Test-Path $CustomApiRawOut)) {
+                Write-Host "    [DEBUG] Custom API Run Failed!" -ForegroundColor Red
+                Write-Host "    [DEBUG] RAW API OUTPUT START:" -ForegroundColor Red
+                Write-Host $CustomApiOutput -ForegroundColor Gray
+                Write-Host "    [DEBUG] RAW API OUTPUT END" -ForegroundColor Red
+            }
         }
 
         # -------------------------------------------------------------
@@ -79,8 +123,9 @@ function Invoke-VmAudit {
                 DNSName           = $NetInfo.DNSName
             }
         } else {
-            Write-StigLog -Message "Scan failed to produce JSON for $($Target.Name). Cinc-Auditor Error: $BashOutput" -Severity ERROR -Source "VmWorker"
+            Write-StigLog -Message "Scan failed to produce JSON for $($Target.Name). Cinc-Auditor Error: $ApiOutput" -Severity ERROR -Source "VmWorker"
         }
     } -ThrottleLimit 15
 }
+
 Export-ModuleMember -Function Invoke-VmAudit

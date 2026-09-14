@@ -21,6 +21,14 @@ function Invoke-VcsaAudit {
         $RawJsonDir = "/tmp/stig_staging/$($Target.FQDN)"
         if (-not (Test-Path $RawJsonDir)) { New-Item -ItemType Directory -Path $RawJsonDir -Force | Out-Null }
 
+        # Configure PowerCLI persistently in User scope so InSpec's spawned subprocesses inherit the bypass
+        try {
+            Set-PowerCLIConfiguration -InvalidCertificateAction Ignore -Confirm:$false -Scope User | Out-Null
+        } catch {
+            Write-Warning "Could not configure PowerCLI certificate validation bypass: $_"
+        }
+
+        # Helper functions use the API (Invoke-RestMethod) directly
         $NetInfo = Get-VCSANetworkInfo -FQDN $Target.FQDN -Username $Target.AdminUser -Password $Target.AdminPass
 
         $VsphereBasePath   = "/usr/share/stigs/vsphere/8.0"
@@ -39,7 +47,7 @@ function Invoke-VcsaAudit {
         $CustomSshRawOut = Join-Path $RawJsonDir "$($Target.FQDN)_VCSA_CUSTOM_SSH_raw.json"
 
         $VcsaComponents = @(
-            @{ Component = "vCenter";         Transport = "vmware"; ProfileFolder = "vcenter" },
+            @{ Component = "vCenter";        Transport = "vmware"; ProfileFolder = "vcenter" },
             @{ Component = "VCSA_EAM";        Transport = "ssh";    ProfileFolder = "eam" },
             @{ Component = "VCSA_Envoy";      Transport = "ssh";    ProfileFolder = "envoy" },
             @{ Component = "VCSA_Lookup_Svc"; Transport = "ssh";    ProfileFolder = "lookup" },
@@ -51,9 +59,6 @@ function Invoke-VcsaAudit {
             @{ Component = "VCSA_VAMI";       Transport = "ssh";    ProfileFolder = "vami" }
         )
 
-        $b64AdminPass = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Target.AdminPass))
-        $b64RootPass  = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Target.RootPass))
-
         $ApiComponent  = $VcsaComponents | Where-Object { $_.Transport -eq "vmware" }
         $SshComponents = $VcsaComponents | Where-Object { $_.Transport -eq "ssh" }
         $AllResults    = @()
@@ -61,89 +66,121 @@ function Invoke-VcsaAudit {
         # -------------------------------------------------------------
         # PHASE 1: API (PowerCLI) Executions
         # -------------------------------------------------------------
-        Write-Host "[*] Disabling SSH & Running vCenter API Audit..." -ForegroundColor Cyan
-        Set-VCSASshState -FQDN $Target.FQDN -Username $Target.AdminUser -Password $Target.AdminPass -Enabled $false
+        try {
+            Write-Host "[*] Disabling SSH & Running vCenter API Audit..." -ForegroundColor Cyan
+            Set-VCSASshState -FQDN $Target.FQDN -Username $Target.AdminUser -Password $Target.AdminPass -Enabled $false
 
-        $RawOut      = Join-Path $RawJsonDir "$($Target.FQDN)_$($ApiComponent.Component)_raw.json"
-        $ProfilePath = Join-Path $VsphereProfileBaseDir $ApiComponent.ProfileFolder
-        $Cmd = "VISERVER='$($Target.FQDN)' VISERVER_USERNAME='$($Target.AdminUser)' VISERVER_PASSWORD=`"`$(echo '$b64AdminPass' | base64 -d)`" cinc-auditor exec $ProfilePath -t vmware:// --input-file $InputsFile --reporter json:$RawOut"
-        bash -c $Cmd | Out-Null
-
-        if (Test-Path (Join-Path $CustomApiProfilePath "inspec.yml")) {
-            Write-Host " -> [$($Target.FQDN)] Executing Custom VCSA API Overlay..." -ForegroundColor DarkCyan
-            $CustomApiCmd = "VISERVER='$($Target.FQDN)' VISERVER_USERNAME='$($Target.AdminUser)' VISERVER_PASSWORD=`"`$(echo '$b64AdminPass' | base64 -d)`" cinc-auditor exec '$CustomApiProfilePath' -t vmware:// --input-file $InputsFile --reporter json:'$CustomApiRawOut'"
-            bash -c $CustomApiCmd 2>&1 | Out-Null
-        }
-
-        if (Test-Path $RawOut) {
-            $AllResults += [PSCustomObject]@{ 
-                TargetName       = $Target.FQDN; 
-                TargetType       = "VCSA"; 
-                DisaComponent    = $ApiComponent.Component; 
-                RawJsonFile      = $RawOut;
-                CustomApiJsonFile= if (Test-Path $CustomApiRawOut) { $CustomApiRawOut } else { $null };
-                CustomSshJsonFile= $null;
-                vCenterShortName = $Target.vCenterShortName;
-                DateStr          = $Target.DateStr;
-                IPAddress        = $NetInfo.IPAddress;
-                MACAddress       = $NetInfo.MACAddress
-            }
-        }
-
-        # -------------------------------------------------------------
-        # PHASE 2: SSH Executions
-        # -------------------------------------------------------------
-        Write-Host "[*] Enabling SSH & Running VCSA Services..." -ForegroundColor Cyan
-        Set-VCSASshState -FQDN $Target.FQDN -Username $Target.AdminUser -Password $Target.AdminPass -Enabled $true
-
-        $PreFlightSuccess = Set-VCSABashShell -FQDN $Target.FQDN -RootPassword $Target.RootPass
-        if (-not $PreFlightSuccess) {
-            Throw "CRITICAL: Pre-flight shell verification failed for $($Target.FQDN)."
-        }
-
-        if (Test-Path (Join-Path $CustomSshProfilePath "inspec.yml")) {
-            Write-Host " -> [$($Target.FQDN)] Executing Custom VCSA SSH Overlay..." -ForegroundColor DarkCyan
-            $CustomSshCmd = "env -u VISERVER -u VISERVER_USERNAME -u VISERVER_PASSWORD cinc-auditor exec '$CustomSshProfilePath' -t ssh://root@$($Target.FQDN) --password `"`$(echo '$b64RootPass' | base64 -d)`" --input-file $InputsFile --reporter json:'$CustomSshRawOut'"
-            bash -c $CustomSshCmd 2>&1 | Out-Null
-        }
-
-        $SshResults = $SshComponents | ForEach-Object -Parallel {
-            $App                = $_
-            $Target             = $using:Target
-            $NetInfo            = $using:NetInfo
-            $VcsaProfileBaseDir = $using:VcsaProfileBaseDir
-            $InputsFile         = $using:InputsFile
-            $RawJsonDir         = $using:RawJsonDir
-            $PassRoot           = $using:b64RootPass
-
-            $RawOut      = Join-Path $RawJsonDir "$($Target.FQDN)_$($App.Component)_raw.json"
-            $ProfilePath = Join-Path $VcsaProfileBaseDir $App.ProfileFolder
+            $RawOut      = Join-Path $RawJsonDir "$($Target.FQDN)_$($ApiComponent.Component)_raw.json"
+            $ProfilePath = Join-Path $VsphereProfileBaseDir $ApiComponent.ProfileFolder
             
-            $Cmd = "cinc-auditor exec $ProfilePath -t ssh://root@$($Target.FQDN) --password `"`$(echo '$PassRoot' | base64 -d)`" --input-file $InputsFile --reporter json:$RawOut"
-            bash -c $Cmd | Out-Null
+            # FIXED: Set environment variables directly in PowerShell Process (No escaping or Base64 required)
+            $env:VISERVER          = $Target.FQDN
+            $env:VISERVER_USERNAME = $Target.AdminUser
+            $env:VISERVER_PASSWORD = $Target.AdminPass
+            
+            # FIXED: Force ANSI color stripping so the VMware train parser does not break in PowerShell 7.2.1+
+            $env:NO_COLOR          = "true"
+
+            # FIXED: Invoke cinc-auditor directly (PowerShell handles native parameter passing literally and securely)
+            cinc-auditor exec $ProfilePath -t vmware:// --insecure --input-file $InputsFile --reporter json:$RawOut | Out-Null
+
+            if (Test-Path (Join-Path $CustomApiProfilePath "inspec.yml")) {
+                Write-Host " -> [$($Target.FQDN)] Executing Custom VCSA API Overlay..." -ForegroundColor DarkCyan
+                cinc-auditor exec $CustomApiProfilePath -t vmware:// --insecure --input-file $InputsFile --reporter json:$CustomApiRawOut 2>&1 | Out-Null
+            }
+
+            # Cleanup process-level API environment variables
+            Remove-Item env:VISERVER -ErrorAction SilentlyContinue
+            Remove-Item env:VISERVER_USERNAME -ErrorAction SilentlyContinue
+            Remove-Item env:VISERVER_PASSWORD -ErrorAction SilentlyContinue
+            Remove-Item env:NO_COLOR -ErrorAction SilentlyContinue
 
             if (Test-Path $RawOut) {
-                [PSCustomObject]@{ 
+                $AllResults += [PSCustomObject]@{ 
                     TargetName       = $Target.FQDN; 
                     TargetType       = "VCSA"; 
-                    DisaComponent    = $App.Component; 
+                    DisaComponent    = $ApiComponent.Component; 
                     RawJsonFile      = $RawOut;
-                    CustomApiJsonFile= $null;
-                    CustomSshJsonFile= if (Test-Path $using:CustomSshRawOut) { $using:CustomSshRawOut } else { $null };
+                    CustomApiJsonFile= if (Test-Path $CustomApiRawOut) { $CustomApiRawOut } else { $null };
+                    CustomSshJsonFile= $null;
                     vCenterShortName = $Target.vCenterShortName;
                     DateStr          = $Target.DateStr;
                     IPAddress        = $NetInfo.IPAddress;
                     MACAddress       = $NetInfo.MACAddress
                 }
             } else {
-                Write-Error "Failed to generate JSON report for $($App.Component) on $($Target.FQDN)"
+                Write-Warning "Failed to generate JSON report for $($ApiComponent.Component) on $($Target.FQDN)"
             }
-        } -ThrottleLimit 10 
-        
-        $AllResults += $SshResults
+        } catch {
+            Write-Warning "Exception caught during Phase 1 (vCenter API) execution: $_"
+        }
 
-        Write-Host "[*] Audits Complete. Securing appliance (Disabling SSH)..." -ForegroundColor Cyan
-        Set-VCSASshState -FQDN $Target.FQDN -Username $Target.AdminUser -Password $Target.AdminPass -Enabled $false
+        # -------------------------------------------------------------
+        # PHASE 2: SSH Executions
+        # -------------------------------------------------------------
+        try {
+            Write-Host "[*] Enabling SSH & Running VCSA Services..." -ForegroundColor Cyan
+            Set-VCSASshState -FQDN $Target.FQDN -Username $Target.AdminUser -Password $Target.AdminPass -Enabled $true
+
+            $PreFlightSuccess = Set-VCSABashShell -FQDN $Target.FQDN -RootPassword $Target.RootPass
+            if (-not $PreFlightSuccess) {
+                Throw "CRITICAL: Pre-flight shell verification failed for $($Target.FQDN)."
+            }
+
+            if (Test-Path (Join-Path $CustomSshProfilePath "inspec.yml")) {
+                Write-Host " -> [$($Target.FQDN)] Executing Custom VCSA SSH Overlay..." -ForegroundColor DarkCyan
+                # FIXED: Direct native parameter execution
+                cinc-auditor exec $CustomSshProfilePath -t ssh://root@$($Target.FQDN) --password $Target.RootPass --insecure --input-file $InputsFile --reporter json:$CustomSshRawOut 2>&1 | Out-Null
+            }
+
+            $SshResults = $SshComponents | ForEach-Object -Parallel {
+                $App                = $_
+                $Target             = $using:Target
+                $NetInfo            = $using:NetInfo
+                $VcsaProfileBaseDir = $using:VcsaProfileBaseDir
+                $InputsFile         = $using:InputsFile
+                $RawJsonDir         = $using:RawJsonDir
+
+                $RawOut      = Join-Path $RawJsonDir "$($Target.FQDN)_$($App.Component)_raw.json"
+                $ProfilePath = Join-Path $VcsaProfileBaseDir $App.ProfileFolder
+                
+                # FIXED: Direct native execution prevents password variable expansion issues in parallel blocks
+                cinc-auditor exec $ProfilePath -t ssh://root@$($Target.FQDN) --password $Target.RootPass --input-file $InputsFile --reporter json:$RawOut | Out-Null
+
+                if (Test-Path $RawOut) {
+                    [PSCustomObject]@{ 
+                        TargetName       = $Target.FQDN; 
+                        TargetType       = "VCSA"; 
+                        DisaComponent    = $App.Component; 
+                        RawJsonFile      = $RawOut;
+                        CustomApiJsonFile= $null;
+                        CustomSshJsonFile= if (Test-Path $using:CustomSshRawOut) { $using:CustomSshRawOut } else { $null };
+                        vCenterShortName = $Target.vCenterShortName;
+                        DateStr          = $Target.DateStr;
+                        IPAddress        = $NetInfo.IPAddress;
+                        MACAddress       = $NetInfo.MACAddress
+                    }
+                } else {
+                    Write-Warning "Failed to generate JSON report for $($App.Component) on $($Target.FQDN)"
+                }
+            } -ThrottleLimit 10 
+            
+            if ($SshResults) {
+                $AllResults += $SshResults
+            }
+        } catch {
+            Write-Warning "Exception caught during Phase 2 (SSH Services) execution: $_"
+        }
+
+        # -------------------------------------------------------------
+        # CLEANUP: Secure Target
+        # -------------------------------------------------------------
+        try {
+            Write-Host "[*] Audits Complete. Securing appliance (Disabling SSH)..." -ForegroundColor Cyan
+            Set-VCSASshState -FQDN $Target.FQDN -Username $Target.AdminUser -Password $Target.AdminPass -Enabled $false
+        } catch {
+            Write-Warning "Could not secure target (disable SSH): $_"
+        }
 
         $AllResults | Write-Output
     }

@@ -7,21 +7,29 @@ function Get-AssetProviderConfig {
     param([string]$OverlayRoot)
     
     $VsphereBasePath = "/usr/share/stigs/vsphere/8.0"
-    $ApiProfilePath = Get-ChildItem -Path $VsphereBasePath -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { 
-        $_.Name -eq "vm" -and $_.Parent.Name -match "vmware-vsphere-8.0-.*"
-    } | Select-Object -ExpandProperty FullName -First 1
+    
+    # Locate the active versioned STIG/SRG profile path
+    $LatestStigRelease = Get-ChildItem -Path $VsphereBasePath -Directory -ErrorAction SilentlyContinue | 
+        Where-Object { $_.Name -match "^v\d+r\d+-(srg|stig)$" } | 
+        Sort-Object Name -Descending | 
+        Select-Object -ExpandProperty Name -First 1
 
-    if (-not $ApiProfilePath) {
-        $LatestStigRelease = Get-ChildItem -Path $VsphereBasePath -Directory -ErrorAction SilentlyContinue | 
-            Where-Object { $_.Name -match "^v\d+r\d+-(srg|stig)$" } | 
-            Sort-Object Name -Descending | 
-            Select-Object -ExpandProperty Name -First 1
-        
-        if ($LatestStigRelease) {
-            $ApiProfilePath = Join-Path $VsphereBasePath "$LatestStigRelease/vsphere/inspec/vmware-vsphere-8.0-stig-baseline/vm"
+    $ApiProfilePath = $null
+    if ($LatestStigRelease) {
+        $CandidatePath = Join-Path $VsphereBasePath "$LatestStigRelease/vsphere/inspec/vmware-vsphere-8.0-stig-baseline/vm"
+        if (Test-Path $CandidatePath) {
+            $ApiProfilePath = $CandidatePath
         }
     }
 
+    # Fallback to recursive directory search
+    if (-not $ApiProfilePath) {
+        $ApiProfilePath = Get-ChildItem -Path $VsphereBasePath -Recurse -Directory -ErrorAction SilentlyContinue | Where-Object { 
+            $_.Name -eq "vm" -and $_.Parent.Name -match "vmware-vsphere-8.0-.*"
+        } | Select-Object -ExpandProperty FullName -First 1
+    }
+
+    # Final fallback to sourceDir
     if (-not $ApiProfilePath -or -not (Test-Path $ApiProfilePath)) {
         $ApiProfilePath = Join-Path $OverlayRoot "sourceDir/vsphere/inspec/vmware-vsphere-8.0-vm-baseline"
     }
@@ -78,12 +86,16 @@ function Invoke-AssetRemediation {
 
     foreach ($StigID in $FixList) {
         try {
+            if (-not (Get-Command -Name $StigID -ErrorAction SilentlyContinue)) {
+                Write-Warning "Remediation cmdlet/function '$StigID' is not defined in $($Config.FuncsModule)."
+                continue
+            }
+
             Write-Host " [VM] Executing fix $StigID on $($AssetObject.Name)"
             & $StigID -vm $AssetObject -stigsettings $DefaultVmSettings
             $SuccessFixes.Add($StigID)
         }
         catch {
-            # Corrected: Write-Warning logs the event without interrupting execution flow
             Write-Warning "Failed to apply VM fix $StigID on $($AssetObject.Name). Error: $_"
         }
     }
@@ -96,9 +108,33 @@ function Get-AssetVerificationArgs {
     
     $InputArgString = ""
     if (Test-Path $Config.InputsYml) {
-        $InputArgString = "--input-file '$($Config.InputsYml)'"
+        $InputArgString = "--input-file $($Config.InputsYml)"
     }
     
-    $Controls = $Job.FixedRules -join " "
-    return "exec '$($Config.InspecAPI)' -t vmware:// --input vmName='$($Job.VcenterObjName)' --reporter json:'$DeltaJson' $InputArgString --controls $Controls"
+    # Keep --controls as a string as requested
+    $ControlsString = ""
+    if ($Job.FixedRules -and $Job.FixedRules.Count -gt 0) {
+        $ControlsString = "--controls " + ($Job.FixedRules -join " ")
+    }
+    
+    # Build clean argument string without embedded quotes that break CLI tokenization
+    $ArgParts = @(
+        "exec",
+        $Config.InspecAPI,
+        "-t", "vmware://",
+        "--input", "vmName=$($Job.VcenterObjName)",
+        "--reporter", "json:$DeltaJson"
+    )
+    
+    if (-not [string]::IsNullOrWhiteSpace($InputArgString)) {
+        $ArgParts += $InputArgString
+    }
+    
+    if (-not [string]::IsNullOrWhiteSpace($ControlsString)) {
+        $ArgParts += $ControlsString
+    }
+
+    return ($ArgParts -join " ").Trim()
 }
+
+Export-ModuleMember -Function Get-AssetProviderConfig, Get-AssetObject, Invoke-AssetRemediation, Get-AssetVerificationArgs

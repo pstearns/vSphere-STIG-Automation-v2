@@ -632,6 +632,13 @@ function VMCH-80-000207 {
     if ($VM.ExtensionData.Config.Flags.EnableLogging -eq $TargetMode) {
         Write-StigLog -Message "[$($VM.Name)] VM Logging is already set correctly to $TargetMode." -Severity SUCCESS -Source "VmRemediation"
     } else {
+        # CRITICAL POWER STATE CHECK FOR COLD RECONFIG
+        if ($VM.PowerState -ne "PoweredOff") {
+            Write-StigLog -Message "[$($VM.Name)] SKIP: VM Logging modifications require the VM to be Powered Off. Current State: $($VM.PowerState)" -Severity WARN -Source "VmRemediation"
+            # Throw warning so the orchestrator doesn't treat this as a successful fix execution
+            throw "Operation requires offline state (Powered Off)."
+        }
+
         Write-StigLog -Message "[$($VM.Name)] VM Logging was set to $($VM.ExtensionData.Config.Flags.EnableLogging). Modifying to $TargetMode..." -Severity WARN -Source "VmRemediation"
         $View = $VM | Get-View -ErrorAction Stop
         $Spec = New-Object VMware.Vim.VirtualMachineConfigSpec
