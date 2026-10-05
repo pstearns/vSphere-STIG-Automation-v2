@@ -41,48 +41,78 @@ security login publickey create -vserver <vserver name> -username <username> -in
   tag cci: ['CCI-001159']
   tag nist: ['SC-17 a']
 
-  approved_ca_issuers = input('approved_ca_issuers', value: []).to_a
-  cmd = ontap_command('security certificate show -instance -type client-ca')
+  # Retrieve allowed CA issuers and ignored internal certificates from inputs
+  approved_ca_issuers     = Array(input('approved_ca_issuers'))
+  ignored_client_ca_certs = Array(input('ignored_client_ca_certs', value: []))
+
+  # Query ONTAP using instance format to get precise multi-line field definitions
+  cmd = ontap_command('security certificate show -type client-ca -instance')
 
   describe 'Client CA Certificates' do
     let(:installed_certs) do
-      cmd.stdout.split('Vserver:').drop(1).map do |cert_block|
-        issuer = cert_block.match(/Issuer:\s*CN=([^,]+)/)&.captures&.first
-        issuer ||= cert_block.match(/Certificate Authority:\s*(\S+)/)&.captures&.first
-        {
-          vserver: cert_block.lines.first.strip,
-          name: cert_block.match(/Certificate Name:\s*(\S+)/)&.captures&.first,
-          issuer: issuer
-        }
-      end.compact
+      certs = []
+
+      # Sanitize string to prevent any UTF-8 Multibyte exceptions
+      sanitized_output = cmd.stdout.encode('UTF-8', invalid: :replace, undef: :replace, replace: '')
+
+      # Split output by certificate instances
+      sanitized_output.split('Vserver:').drop(1).map do |cert_block|
+        vserver = cert_block.lines.first.strip
+        cert_name = nil
+        issuer_ca = nil
+
+        cert_block.each_line do |line|
+          clean_line = line.strip
+
+          if clean_line.start_with?('Certificate Name:')
+            cert_name = clean_line.split(':', 2).last.strip
+          elsif clean_line.start_with?('Certificate Authority:')
+            # This captures the full CA string cleanly (e.g., "IC PKI Root 4" or "DoD IC PKI Root 4")
+            issuer_ca = clean_line.split(':', 2).last.strip
+          end
+        end
+
+        if cert_name && issuer_ca
+          certs << {
+            vserver: vserver,
+            name: cert_name,
+            issuer: issuer_ca
+          }
+        end
+      end
+      certs
     end
 
     it "must have the 'approved_ca_issuers' list defined in the input file" do
-      failure_message = "The 'approved_ca_issuers' input is not defined. This check cannot be automated without a list of authorized CA issuers."
-      expect(approved_ca_issuers).not_to be_empty, failure_message
+      expect(approved_ca_issuers).not_to be_empty,
+        "The 'approved_ca_issuers' input is not defined. This check cannot be automated without a list of authorized CA issuers."
     end
-        if !approved_ca_issuers.empty?
+
+    if !approved_ca_issuers.empty?
       it 'must be issued by a DoD-approved Certificate Authority' do
         unapproved_certs = installed_certs.reject do |cert|
-          approved_ca_issuers.include?(cert[:issuer])
+          # Accept if the issuer is in the approved list
+          # OR if the certificate name is in the ignored internal list
+          approved_ca_issuers.include?(cert[:issuer]) ||
+          ignored_client_ca_certs.include?(cert[:name])
         end
 
         unless unapproved_certs.empty?
-          details = unapproved_certs.map { |c| "Cert '#{c[:name]}' on Vserver '#{c[:vserver]}' has unapproved issuer '#{c[:issuer]}'" }.join('; ')
+          details = unapproved_certs.map { |c|
+            "Cert '#{c[:name]}' on Vserver '#{c[:vserver]}' has unapproved issuer '#{c[:issuer]}'"
+          }.join('; ')
           failure_message = "The following certificates are not issued by an approved DoD PKI: #{details}"
           expect(unapproved_certs).to be_empty, failure_message
         end
-        expect(unapproved_certs).to be_empty
       end
     end
   end
 
   describe 'NOT A CHECK: FOR MANUAL REVIEW OF OUTPUT' do
-    skip <<~EVIDENCE 
-    
+    skip <<~EVIDENCE
       --- RAW OUTPUT FOR MANUAL VERIFICATION ---
       #{cmd}
-      #{cmd.stdout.encode('UTF-8')}
+      #{cmd.stdout.encode('UTF-8', invalid: :replace, undef: :replace, replace: '')}
     EVIDENCE
   end
 end

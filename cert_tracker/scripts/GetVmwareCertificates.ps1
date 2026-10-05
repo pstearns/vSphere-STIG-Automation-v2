@@ -18,7 +18,7 @@ param (
     [string]$ModulePath     = "/usr/share/stigs/orchestration_overlay/modules/CredentialManagement.psm1"
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
 
 # ---------------------------------------------------------
 # 1. Environment & Module Initialization

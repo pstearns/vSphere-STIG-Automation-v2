@@ -26,15 +26,26 @@ If ONTAP is not configured to authenticate each administrator prior to authorizi
   cmd = ontap_command('security login show -role admin -authentication-method domain')
 
   describe 'Administrator Authentication Method' do
+    let(:domain_admin_accounts_present) do
+      # Robust check that works with AD group names containing spaces or backslashes.
+      # Simply look for any real data line that contains the word "domain".
+      lines = cmd.stdout.lines.map(&:strip).reject do |line|
+        line.empty? ||
+        line.match?(/^(Last login|Vserver:|User\/Group|Name|----)/i) ||
+        line.match?(/entries were displayed/i)
+      end
+
+      lines.any? { |line| line.match?(/\bdomain\b/i) }
+    end
+
     it 'must have at least one administrative account using domain authentication' do
-      expect(cmd.stdout).to match(/^\S+\s+(?:console|http|ontapi|service-processor|ssh)\b/),
+      expect(domain_admin_accounts_present).to eq(true),
         "No administrative accounts are configured to use 'domain' authentication."
     end
   end
 
   describe 'NOT A CHECK: FOR MANUAL REVIEW OF OUTPUT' do
-    skip <<~EVIDENCE 
-    
+    skip <<~EVIDENCE
       --- RAW OUTPUT FOR MANUAL VERIFICATION ---
       #{cmd}
       #{cmd.stdout.encode('UTF-8')}

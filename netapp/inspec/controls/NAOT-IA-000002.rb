@@ -21,25 +21,36 @@ If any account, other than the admin account used as the account of last resort,
   tag cci: ['CCI-001941']
   tag nist: ['IA-2 (8)']
 
-  account_of_last_resort = input('account_last_resort', value: 'nacadmin').to_s
+  # Retrieve allowed accounts of last resort directly as an Array (e.g. ['nacadmin', 'admin'])
+  allowed_last_resort_accounts = Array(input('account_last_resort'))
 
   cmd = ontap_command('security login show -role admin')
 
   describe 'Replay-Resistant Authentication for Privileged Accounts' do
     let(:password_based_admins) do
-      cmd.stdout.scan(/^(\S+)\s+\S+\s+password\b/).flatten.uniq
+      # Parse out all usernames using password-based authentication
+      admins = []
+      cmd.stdout.each_line do |line|
+        if line.include?('password')
+          admins << line.split.first
+        end
+      end
+      admins.uniq
     end
 
-    it 'must not use password-based authentication for any privileged account, except for the account of last resort' do
-      disallowed_password_users = password_based_admins - ['admin', account_of_last_resort]
-      failure_message = "The following privileged accounts are using non-replay-resistant 'password' authentication: #{disallowed_password_users.join(', ')}"
+    it 'must not use password-based authentication for any privileged account, except for the authorized account of last resort' do
+      # Subtract the authorized last resort list directly from all password-based admins
+      disallowed_password_users = password_based_admins - allowed_last_resort_accounts
+      
+      failure_message = "The following privileged accounts are using non-replay-resistant 'password' authentication: #{disallowed_password_users.join(', ')}.\n" \
+                        "Only the authorized account of last resort #{allowed_last_resort_accounts} is permitted to use password authentication."
+      
       expect(disallowed_password_users).to be_empty, failure_message
     end
   end
 
   describe 'NOT A CHECK: FOR MANUAL REVIEW OF OUTPUT' do
     skip <<~EVIDENCE 
-
       --- RAW OUTPUT FOR MANUAL VERIFICATION ---
       #{cmd}
       #{cmd.stdout.encode('UTF-8')}

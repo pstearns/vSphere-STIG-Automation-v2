@@ -105,36 +105,33 @@ function Invoke-AssetRemediation {
 
 function Get-AssetVerificationArgs {
     param($Job, $Config, $DeltaJson)
-    
-    $InputArgString = ""
+
+    # Base arguments – each token is a separate array element
+    $ArgParts = [System.Collections.Generic.List[string]]::new()
+    $ArgParts.Add("exec")
+    $ArgParts.Add($Config.InspecAPI)
+    $ArgParts.Add("-t")
+    $ArgParts.Add("vmware://")                       # transport; credentials come from env:VISERVER*
+    $ArgParts.Add("--input")
+    $ArgParts.Add("vmName=$($Job.VcenterObjName)")
+    $ArgParts.Add("--reporter")
+    $ArgParts.Add("json:$DeltaJson")
+
+    # Optional inputs.yml (must be two discrete tokens)
     if (Test-Path $Config.InputsYml) {
-        $InputArgString = "--input-file $($Config.InputsYml)"
-    }
-    
-    # Keep --controls as a string as requested
-    $ControlsString = ""
-    if ($Job.FixedRules -and $Job.FixedRules.Count -gt 0) {
-        $ControlsString = "--controls " + ($Job.FixedRules -join " ")
-    }
-    
-    # Build clean argument string without embedded quotes that break CLI tokenization
-    $ArgParts = @(
-        "exec",
-        $Config.InspecAPI,
-        "-t", "vmware://",
-        "--input", "vmName=$($Job.VcenterObjName)",
-        "--reporter", "json:$DeltaJson"
-    )
-    
-    if (-not [string]::IsNullOrWhiteSpace($InputArgString)) {
-        $ArgParts += $InputArgString
-    }
-    
-    if (-not [string]::IsNullOrWhiteSpace($ControlsString)) {
-        $ArgParts += $ControlsString
+        $ArgParts.Add("--input-file")
+        $ArgParts.Add($Config.InputsYml)
     }
 
-    return ($ArgParts -join " ").Trim()
+    # Optional control filter (must be discrete tokens)
+    if ($Job.FixedRules -and $Job.FixedRules.Count -gt 0) {
+        $ArgParts.Add("--controls")
+        foreach ($ctrl in $Job.FixedRules) {
+            $ArgParts.Add($ctrl)
+        }
+    }
+
+    return $ArgParts.ToArray()
 }
 
 Export-ModuleMember -Function Get-AssetProviderConfig, Get-AssetObject, Invoke-AssetRemediation, Get-AssetVerificationArgs

@@ -24,6 +24,13 @@ function Invoke-EsxiAudit {
         Write-Warning "Could not configure PowerCLI certificate validation bypass: $_"
     }
 
+    # UPGRADE 1: Read the helper files ONCE in parent scope to prevent concurrent disk access lockups inside parallel threads
+    $GlobalFuncsPath = Join-Path $OverlayRoot "modules/globalFunctions.psm1"
+    $EsxiHelpersPath = Join-Path $OverlayRoot "modules/esxi/EsxiHelpers.psm1"
+
+    $GlobalFuncsContent = if (Test-Path $GlobalFuncsPath) { (Get-Content $GlobalFuncsPath -Raw) -replace "(?ms)Export-ModuleMember.*", "" } else { $null }
+    $EsxiHelpersContent = if (Test-Path $EsxiHelpersPath) { (Get-Content $EsxiHelpersPath -Raw) -replace "(?ms)Export-ModuleMember.*", "" } else { $null }
+
     $TargetList | ForEach-Object -Parallel {
         # FIXED: Suppress parallel PowerCLI RecentServerList write conflicts
         $WarningPreference = 'SilentlyContinue'
@@ -31,11 +38,45 @@ function Invoke-EsxiAudit {
         $Target = $_
         $OverlayRoot = $using:OverlayRoot
 
-        $GlobalFuncs = (Get-Content (Join-Path $OverlayRoot "modules/globalFunctions.psm1") -Raw) -replace "(?ms)Export-ModuleMember.*", ""
-        Invoke-Expression $GlobalFuncs
+        # --- AUTO-FAIL OFFLINE HOSTS ---
+        if ($Target.IsOffline) {
+            Write-Host " [!] Target $($Target.Name) is offline ($($Target.ConnectionState)). Writing FAILURE record and continuing." -ForegroundColor Red
 
-        $EsxiHelpers = (Get-Content (Join-Path $OverlayRoot "modules/esxi/EsxiHelpers.psm1") -Raw) -replace "(?ms)Export-ModuleMember.*", ""
-        Invoke-Expression $EsxiHelpers
+            $RawJsonDir = "/tmp/stig_staging/$($Target.Name)"
+            if (-not (Test-Path $RawJsonDir)) {
+                New-Item -ItemType Directory -Path $RawJsonDir -Force | Out-Null
+            }
+
+            $FailedMetaPath = Join-Path $RawJsonDir "$($Target.Name)_ESXi_OFFLINE.json"
+            @{
+                status  = "failed"
+                reason  = "Host ConnectionState was $($Target.ConnectionState)"
+                host    = $Target.Name
+                vCenter = $Target.vCenter
+            } | ConvertTo-Json | Out-File -FilePath $FailedMetaPath -Force
+
+            # Emit a pipeline object so Format-StigChecklist / summary still see the host
+            [PSCustomObject]@{
+                TargetName        = $Target.Name
+                TargetType        = "ESXi"
+                DisaComponent     = "ESXi"
+                ApiJsonFile       = $null
+                SshJsonFile       = $null
+                CustomApiJsonFile = $null
+                CustomSshJsonFile = $null
+                vCenterShortName  = $Target.vCenterShortName
+                DateStr           = $Target.DateStr
+                IPAddress         = ""
+                MACAddress        = ""
+                IsOffline         = $true
+                ConnectionState   = $Target.ConnectionState
+            }
+            return
+        }
+
+        # UPGRADE 1 (Cont.): Load helpers in thread context using pre-read memory streams (No I/O collision)
+        if ($using:GlobalFuncsContent) { Invoke-Expression $using:GlobalFuncsContent }
+        if ($using:EsxiHelpersContent) { Invoke-Expression $using:EsxiHelpersContent }
 
         Write-Host " -> [$($Target.Name)] Executing ESXi Audit phases..." -ForegroundColor DarkGray
         
@@ -45,8 +86,17 @@ function Invoke-EsxiAudit {
 
         $InputsFile = Join-Path $OverlayRoot "conf/esxi/inputs.yml"
         
-        # Retrieve asset metadata via helper module
-        $NetInfo = Get-EsxiNetworkInfo -vCenter $Target.vCenter -AdminUser $Target.AdminUser -AdminPass $Target.AdminPass -EsxiHost $Target.Name
+        # FIXED: Retrieve asset metadata via helper module (Safeguarded against random timeouts and disconnections)
+        $NetInfo = $null
+        try {
+            $NetInfo = Get-EsxiNetworkInfo -vCenter $Target.vCenter -AdminUser $Target.AdminUser -AdminPass $Target.AdminPass -EsxiHost $Target.Name -ErrorAction Stop
+        } catch {
+            Write-Warning " -> [$($Target.Name)] Failed to retrieve network metadata: $_. Proceeding with fallback blank details."
+            $NetInfo = [PSCustomObject]@{
+                IPAddress  = ""
+                MACAddress = ""
+            }
+        }
 
         # Dynamic profile path resolution
         $VsphereBasePath   = "/usr/share/stigs/vsphere/8.0"
@@ -77,39 +127,83 @@ function Invoke-EsxiAudit {
         # PHASE 1: SSH Executions (Open Access -> Audit -> Close Access)
         # -------------------------------------------------------------
         if ($HasBaseSsh -or $HasCustomSsh) {
-            # Open SSH access and disable lockdown
+            # Open SSH access and disable lockdown via PowerCLI (required to allow connection testing)
             Set-EsxiAccessState -vCenter $Target.vCenter -AdminUser $Target.AdminUser -AdminPass $Target.AdminPass -EsxiHost $Target.Name -Enabled $true
 
             try {
-                if ($HasBaseSsh) {
-                    # FIXED: Invoking cinc-auditor natively in PowerShell
-                    $SshArgs = @("exec", $SshProfilePath, "-t", "ssh://root@$($Target.Name)", "--password", $Target.RootPass, "--reporter", "json:$SshRawOut")
-                    if ($InputArg) { $SshArgs += $InputArg }
-
-                    & cinc-auditor $SshArgs 2>&1 | Out-Null
-                    if (-not (Test-Path $SshRawOut)) { 
-                        Write-StigLog -Message "SSH Audit failed to produce JSON for $($Target.Name)." -Severity WARN -Source "EsxiWorker" 
+                # --- SSH ROOT LOGIN GUARD ---
+                # Test connectivity and confirm 'PermitRootLogin' is active before running InSpec
+                Write-Host " -> [$($Target.Name)] Testing Root SSH login availability..." -ForegroundColor DarkGray
+                $SshLoginSuccess = $false
+                
+                if (Get-Command sshpass -ErrorAction SilentlyContinue) {
+                    # Configure non-interactive SSH test args: 3s connect timeout, 1 password prompt max, bypass host key validation, bypass keys
+                    $SshTestArgs = @("-p", $Target.RootPass, "ssh", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "NumberOfPasswordPrompts=1", "-o", "PubkeyAuthentication=no", "root@$($Target.Name)", "exit")
+                    
+                    $SshProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
+                    $SshProcessInfo.FileName = "sshpass"
+                    $SshProcessInfo.UseShellExecute = $false
+                    $SshProcessInfo.RedirectStandardOutput = $true
+                    $SshProcessInfo.RedirectStandardError = $true
+                    foreach ($arg in $SshTestArgs) { $SshProcessInfo.ArgumentList.Add($arg) }
+                    
+                    try {
+                        $SshProcess = [System.Diagnostics.Process]::Start($SshProcessInfo)
+                        # We give the entire process up to 5 seconds to run (covers network and auth latency)
+                        if ($SshProcess.WaitForExit(5000)) {
+                            if ($SshProcess.ExitCode -eq 0) {
+                                $SshLoginSuccess = $true
+                            } else {
+                                Write-Warning " -> [$($Target.Name)] Pre-check failed (Exit Code: $($SshProcess.ExitCode)). Root login disabled or credential invalid."
+                            }
+                        } else {
+                            $SshProcess.Kill()
+                            Write-Warning " -> [$($Target.Name)] SSH login test timed out."
+                        }
+                    } catch {
+                        Write-Warning " -> [$($Target.Name)] Error launching SSH verification process: $_"
                     }
+                } else {
+                    # Fallback if sshpass is missing
+                    Write-Warning " -> [$($Target.Name)] sshpass missing; bypassing guard pre-check (runs may hang if SSH is misconfigured)."
+                    $SshLoginSuccess = $true
                 }
 
-                if ($HasCustomSsh) {
-                    Write-Host " -> [$($Target.Name)] Executing Custom ESXi SSH Overlay..." -ForegroundColor DarkCyan
-                    
-                    # FIXED: Invoking Custom cinc-auditor natively
-                    $CustomSshArgs = @("exec", $CustomSshProfilePath, "-t", "ssh://root@$($Target.Name)", "--password", $Target.RootPass, "--reporter", "json:$CustomSshRawOut")
-                    if ($InputArg) { $CustomSshArgs += $InputArg }
+                # Only proceed to execute InSpec if the SSH Login Guard succeeded
+                if ($SshLoginSuccess) {
+                    if ($HasBaseSsh) {
+                        # UPGRADE 2: Added --no-create-lockfile to bypass parallel contention on shared profile directories
+                        $SshArgs = @("exec", $SshProfilePath, "-t", "ssh://root@$($Target.Name)", "--password", $Target.RootPass, "--reporter", "json:$SshRawOut", "--no-create-lockfile")
+                        if ($InputArg) { $SshArgs += $InputArg }
 
-                    $CustomSshOutput = & cinc-auditor $CustomSshArgs 2>&1
-                    
-                    if (-not (Test-Path $CustomSshRawOut)) {
-                        Write-Host "    [DEBUG] Custom SSH Run Failed!" -ForegroundColor Red
-                        Write-Host "    [DEBUG] RAW OUTPUT START:" -ForegroundColor Red
-                        Write-Host $CustomSshOutput -ForegroundColor Gray
-                        Write-Host "    [DEBUG] RAW OUTPUT END" -ForegroundColor Red
+                        & cinc-auditor $SshArgs 2>&1 | Out-Null
+                        if (-not (Test-Path $SshRawOut)) { 
+                            Write-StigLog -Message "SSH Audit failed to produce JSON for $($Target.Name)." -Severity WARN -Source "EsxiWorker" 
+                        }
                     }
+
+                    if ($HasCustomSsh) {
+                        Write-Host " -> [$($Target.Name)] Executing Custom ESXi SSH Overlay..." -ForegroundColor DarkCyan
+                        
+                        # UPGRADE 2: Added --no-create-lockfile here as well
+                        $CustomSshArgs = @("exec", $CustomSshProfilePath, "-t", "ssh://root@$($Target.Name)", "--password", $Target.RootPass, "--reporter", "json:$CustomSshRawOut", "--no-create-lockfile")
+                        if ($InputArg) { $CustomSshArgs += $InputArg }
+
+                        $CustomSshOutput = & cinc-auditor $CustomSshArgs 2>&1
+                        
+                        if (-not (Test-Path $CustomSshRawOut)) {
+                            Write-Host "    [DEBUG] Custom SSH Run Failed!" -ForegroundColor Red
+                            Write-Host "    [DEBUG] RAW OUTPUT START:" -ForegroundColor Red
+                            Write-Host $CustomSshOutput -ForegroundColor Gray
+                            Write-Host "    [DEBUG] RAW OUTPUT END" -ForegroundColor Red
+                        }
+                    }
+                } else {
+                    Write-StigLog -Message "SSH Root Login disabled or unreachable on $($Target.Name). Bypassing InSpec SSH profile." -Severity WARN -Source "EsxiWorker"
+                    Write-Host " [!] [$($Target.Name)] Root SSH login failed pre-check. Skipping Phase 1 SSH Audits." -ForegroundColor Yellow
                 }
             } finally {
-                # Ensure the host is ALWAYS locked down before API audits run
+                # Ensure the host is ALWAYS locked down before API audits run, even if pre-check fails
                 Set-EsxiAccessState -vCenter $Target.vCenter -AdminUser $Target.AdminUser -AdminPass $Target.AdminPass -EsxiHost $Target.Name -Enabled $false
             }
         } else {
@@ -137,7 +231,8 @@ function Invoke-EsxiAudit {
         $ProcessInfo.EnvironmentVariables["HOME"]              = "/root"
 
         # Execute Base API Natively (Passing arguments directly via ArgumentList)
-        $ApiArgs = @("exec", $ApiProfilePath, "-t", "vmware://", "--input", "vmhostName=$($Target.Name)", "--reporter", "json:$ApiRawOut")
+        # UPGRADE 2: Added --no-create-lockfile to protect the base API run
+        $ApiArgs = @("exec", $ApiProfilePath, "-t", "vmware://", "--input", "vmhostName=$($Target.Name)", "--reporter", "json:$ApiRawOut", "--no-create-lockfile")
         if (Test-Path $InputsFile) { $ApiArgs += @("--input-file", $InputsFile) }
         
         $ProcessInfo.ArgumentList.Clear()
@@ -155,15 +250,29 @@ function Invoke-EsxiAudit {
         if (Test-Path (Join-Path $CustomApiProfilePath "inspec.yml")) {
             Write-Host " -> [$($Target.Name)] Executing Custom ESXi API Overlay..." -ForegroundColor DarkCyan
             
-            $CustomApiArgs = @("exec", $CustomApiProfilePath, "-t", "vmware://", "--input", "vmhostName=$($Target.Name)", "--reporter", "json:$CustomApiRawOut")
+            # UPGRADE 3: Dedicated ProcessStartInfo for Custom API to avoid parallel argument/state corruption
+            $CustomProcessInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $CustomProcessInfo.FileName = "cinc-auditor"
+            $CustomProcessInfo.UseShellExecute = $false
+            $CustomProcessInfo.RedirectStandardOutput = $true
+            $CustomProcessInfo.RedirectStandardError = $true
+            
+            $CustomProcessInfo.EnvironmentVariables["VISERVER"]          = $Target.vCenter
+            $CustomProcessInfo.EnvironmentVariables["VISERVER_USERNAME"] = $Target.AdminUser
+            $CustomProcessInfo.EnvironmentVariables["VISERVER_PASSWORD"] = $Target.AdminPass
+            $CustomProcessInfo.EnvironmentVariables["VISERVER_INSECURE"] = "true" 
+            $CustomProcessInfo.EnvironmentVariables["NO_COLOR"]          = "true"
+            $CustomProcessInfo.EnvironmentVariables["HOME"]              = "/root"
+
+            # UPGRADE 2: Added --no-create-lockfile to protect custom API folder
+            $CustomApiArgs = @("exec", $CustomApiProfilePath, "-t", "vmware://", "--input", "vmhostName=$($Target.Name)", "--reporter", "json:$CustomApiRawOut", "--no-create-lockfile")
             if (Test-Path $InputsFile) { $CustomApiArgs += @("--input-file", $InputsFile) }
             
-            $ProcessInfo.ArgumentList.Clear()
-            foreach ($arg in $CustomApiArgs) { $ProcessInfo.ArgumentList.Add($arg) }
+            foreach ($arg in $CustomApiArgs) { $CustomProcessInfo.ArgumentList.Add($arg) }
 
-            $Process = [System.Diagnostics.Process]::Start($ProcessInfo)
-            $CustomApiOutput = $Process.StandardOutput.ReadToEnd() + $Process.StandardError.ReadToEnd()
-            $Process.WaitForExit()
+            $CustomProcess = [System.Diagnostics.Process]::Start($CustomProcessInfo)
+            $CustomApiOutput = $CustomProcess.StandardOutput.ReadToEnd() + $CustomProcess.StandardError.ReadToEnd()
+            $CustomProcess.WaitForExit()
             
             if (-not (Test-Path $CustomApiRawOut)) {
                 Write-Host "    [DEBUG] Custom API Run Failed!" -ForegroundColor Red

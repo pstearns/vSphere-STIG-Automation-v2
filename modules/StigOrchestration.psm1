@@ -128,10 +128,18 @@ function Get-StigInventory {
                 if ($getEsxi) {
                     $EsxiReportDir = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/ESXi"
                     if ($null -eq $MasterTargetList.ESXiHosts) { $MasterTargetList.ESXiHosts = @() }
-                    
+
                     $Hosts = Get-VMHost
+
                     foreach ($h in $Hosts) {
-                        $MasterTargetList.ESXiHosts += [PSCustomObject]@{ 
+                        # Connected is the only healthy state we want to audit fully
+                        $isOffline = $h.ConnectionState -ne "Connected"
+
+                        if ($isOffline) {
+                            Write-StigLog -Message "Host $($h.Name) is offline/unreachable (ConnectionState=$($h.ConnectionState)). Will be tracked as failed." -Severity WARN -Source "Inventory"
+                        }
+
+                        $MasterTargetList.ESXiHosts += [PSCustomObject]@{
                             Name             = $h.Name
                             vCenter          = $vCenterFQDN
                             AdminUser        = $adminUser
@@ -140,6 +148,8 @@ function Get-StigInventory {
                             vCenterShortName = $vCenterShortName
                             DateStr          = $DateStr
                             ReportDir        = $EsxiReportDir
+                            IsOffline        = $isOffline
+                            ConnectionState  = $h.ConnectionState   # useful for logging / reporting
                         }
                     }
                 }
@@ -755,7 +765,7 @@ function Send-StigExecutionReport {
         [Parameter(Mandatory=$true)][string]$JobName,
         [Parameter(Mandatory=$true)][string]$DateStr,
         [Parameter(Mandatory=$true)][string[]]$vCenterList,
-        [string]$Scope = "Full Suite",
+        [string]$Scope = "Full Suite", # This parameter is now the key to proper scoping
         [int]$ExitCode = 0,
         [string]$OverlayRoot = "/usr/share/stigs/orchestration_overlay"
     )
@@ -764,15 +774,32 @@ function Send-StigExecutionReport {
     $totalCat1 = 0; $totalCat2 = 0; $totalCat3 = 0; $totalTargets = 0
     $overallStatus = "SUCCESS"
 
+    # Convert the generic scope (e.g., "VMs") to the exact directory name (e.g., "VMs")
+    $TargetFolder = switch ($Scope) {
+        "VCSA" { "VCSA" }
+        "ESXi" { "ESXi" }
+        "VMs"  { "VMs"  }
+        "VM"   { "VMs"  } # Accommodate both "VM" and "VMs" as valid scopes
+        default { "" }
+    }
+
+    if ([string]::IsNullOrEmpty($TargetFolder)) {
+        Write-StigLog -Message "Invalid scope '$Scope' provided to Send-StigExecutionReport. Cannot determine target folder." -Severity ERROR -Source "Reporter"
+        return
+    }
+
     foreach ($vCenterFQDN in $vCenterList) {
         $vCenterShortName = ($vCenterFQDN -split '\.')[0].ToUpper()
-        $vCenterBaseDir   = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName"
+        
+        # Build a DIRECT, NON-RECURSIVE path to the specific asset folder
+        $AssetSpecificReportDir = Join-Path $OverlayRoot "reports/$DateStr/$vCenterShortName/$TargetFolder"
         
         $vcCat1 = 0; $vcCat2 = 0; $vcCat3 = 0; $vcTargetCount = 0
         $vcStatus = "SUCCESS"
 
-        if (Test-Path $vCenterBaseDir) {
-            $cklFiles = Get-ChildItem -Path $vCenterBaseDir -Filter "*.ckl" -Recurse
+        if (Test-Path $AssetSpecificReportDir) {
+            # Search ONLY within the specific folder, WITHOUT -Recurse
+            $cklFiles = Get-ChildItem -Path $AssetSpecificReportDir -Filter "*.ckl"
             $vcTargetCount = $cklFiles.Count
 
             foreach ($ckl in $cklFiles) {
@@ -796,8 +823,9 @@ function Send-StigExecutionReport {
                 }
             }
         } else {
-            $vcStatus = "FAILED"
-            $overallStatus = "FAILED"
+            # If the specific directory doesn't exist, log it but don't fail the whole report
+            Write-StigLog -Message "Report directory for scope '$TargetFolder' not found at: $AssetSpecificReportDir" -Severity WARN -Source "Reporter"
+            $vcStatus = "NO_DATA"
         }
 
         $vcTotalOpen = $vcCat1 + $vcCat2 + $vcCat3
@@ -828,7 +856,7 @@ function Send-StigExecutionReport {
         vCenters            = $vCenterSummaries
     }
 
-    # Save summary JSON
+    # Save summary JSON to the TOP-LEVEL date directory, which is what the image shows
     $summaryJsonDir  = Join-Path $OverlayRoot "reports/$DateStr"
     if (-not (Test-Path $summaryJsonDir)) { New-Item -ItemType Directory -Path $summaryJsonDir -Force | Out-Null }
     $summaryJsonPath = Join-Path $summaryJsonDir "stig_run_summary_${JobName}.json"
@@ -836,7 +864,8 @@ function Send-StigExecutionReport {
 
     # Trigger the universal mailer script
     $mailScriptPath = Join-Path $OverlayRoot "bin/send_alert.ps1"
-    $logPath        = Join-Path $OverlayRoot "logs/${JobName}_trace.log"
+    # This log path should ideally be unique per job run, but we'll keep your existing structure for now
+    $logPath        = Join-Path $OverlayRoot "logs/vm_execution_trace.log"
 
     if (Test-Path $mailScriptPath) {
         & $mailScriptPath -JobName $JobName -LogPath $logPath -ExitCode $ExitCode -Status $overallStatus -SummaryJsonPath $summaryJsonPath

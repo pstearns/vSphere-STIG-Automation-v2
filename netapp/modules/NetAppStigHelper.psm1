@@ -137,6 +137,10 @@ function Start-NetAppChecklistGeneration {
     Write-StigLog "Running full InSpec STIG audit for ${TargetFQDN}. Log: ${LogOutput}" -Severity INFO -Source "NetAppHelper"
     $psc = $Credentials.AdminCred
 
+    # DEBUG: Print the raw arguments to console so you can copy/paste it
+    $rawCmd = "inspec exec `"$InSpecProfilePath`" --target ontap://$($psc.UserName)@$ExecTarget --password `"[REDACTED]`" --input-file `"$InputsPath`" --reporter json:$JsonOutput"
+    Write-StigLog "DEBUG CMD: $rawCmd" -Severity INFO -Source "NetAppHelper"
+
     $ExecTarget = if (-not [string]::IsNullOrEmpty($TargetFQDN)) { $TargetFQDN } else { $ClusterName }
 
     $ArgumentList = @(
@@ -146,11 +150,21 @@ function Start-NetAppChecklistGeneration {
         "--input-file", $InputsPath,
         "--reporter", "json:${JsonOutput}"
     )
+    # Run and ensure the exit code is captured immediately
     & inspec $ArgumentList *> $LogOutput
+    $InspecExitCode = $LASTEXITCODE
 
-    $ValidExitCodes = @(0, 100)
-    if ($LASTEXITCODE -notin $ValidExitCodes -or -not (Test-Path $JsonOutput) -or (Get-Item $JsonOutput).Length -eq 0) {
-        Write-StigLog "ERROR: InSpec failed or produced empty JSON. See log: ${LogOutput}" -Severity ERROR -Source "NetAppHelper"
+    $ValidExitCodes = @(0, 100, 101)
+    if ($InspecExitCode -notin $ValidExitCodes -or -not (Test-Path $JsonOutput) -or (Get-Item $JsonOutput).Length -eq 0) {
+        Write-StigLog "ERROR: InSpec failed with Exit Code: $InspecExitCode" -Severity ERROR -Source "NetAppHelper"
+        
+        # Read the raw error log if it exists and output the first few lines to the console
+        if (Test-Path $LogOutput) {
+            $logContent = Get-Content -Path $LogOutput -Tail 10
+            Write-StigLog "LAST 10 LOG LINES: $logContent" -Severity ERROR -Source "NetAppHelper"
+        } else {
+            Write-StigLog "CRITICAL: No log file was generated at $LogOutput" -Severity ERROR -Source "NetAppHelper"
+        }
         return $null
     }
 

@@ -55,6 +55,21 @@ CyberARK PAM is implemented as the direct user-authentication intermediary, acco
       <Frequency></Frequency>
     </AnswerKey>
   </STIG>
+  <STIG ID="NAOT-CM-000008">
+    <AnswerKey Name="DEFAULT">
+      <ExpectedStatus>NotAFinding</ExpectedStatus>
+      <ValidationCode></ValidationCode>
+      <ValidTrueStatus>NotAFinding</ValidTrueStatus>
+      <ValidTrueComment xml:space="preserve">
+The client-ca certificate named 'actviq' is a self-signed certificate generated and used internally by NetApp Active IQ / AutoSupport services.
+It is not used for external authentication, user access, or any trust relationship that requires a DoD-approved PKI certificate.
+This certificate is required for normal operation of Active IQ services on the cluster.
+      </ValidTrueComment>
+      <ValidFalseStatus></ValidFalseStatus>
+      <Reviewed></Reviewed>
+      <Frequency></Frequency>
+    </AnswerKey>
+  </STIG>
   <STIG ID="NAOT-IA-000003">
     <AnswerKey Name="DEFAULT">
       <ExpectedStatus>Not_Reviewed</ExpectedStatus>

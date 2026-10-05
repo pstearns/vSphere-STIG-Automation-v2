@@ -30,8 +30,30 @@ Configure non-privileged users with "security login create -user-or-group-name <
     end
 
     let(:unauthorized_default_all_roles) do
-      default_all_roles = cmd.stdout.scan(/(?:^\S+|\s+)\s+(\S+)\s+DEFAULT\s+all\b/i).flatten.uniq
-      default_all_roles.reject { |role| authorized_admin_roles.include?(role) }
+      roles_with_default_all = []
+
+      cmd.stdout.each_line do |line|
+        # Skip empty lines, headers, and separator lines
+        stripped = line.strip
+        next if stripped.empty?
+        next if stripped.match?(/^(Role|Vserver|----|Command)/i)
+
+        fields = stripped.split(/\s+/)
+
+        # Find the position of the token "DEFAULT" (case-insensitive)
+        default_idx = fields.index { |f| f.casecmp('DEFAULT').zero? }
+        next unless default_idx
+
+        # The access level must be the next field and equal "all"
+        access_level = fields[default_idx + 1]
+        next unless access_level&.casecmp('all')&.zero?
+
+        # Role name is the field immediately before DEFAULT
+        role = fields[default_idx - 1]
+        roles_with_default_all << role if role && !role.empty?
+      end
+
+      roles_with_default_all.uniq.reject { |role| authorized_admin_roles.include?(role) }
     end
 
     it 'must not grant unrestricted DEFAULT "all" access to non-admin roles' do
@@ -40,8 +62,7 @@ Configure non-privileged users with "security login create -user-or-group-name <
     end
 
     describe 'NOT A CHECK: FOR MANUAL REVIEW OF OUTPUT' do
-      skip <<~EVIDENCE 
-
+      skip <<~EVIDENCE
         --- RAW OUTPUT FOR MANUAL VERIFICATION ---
         #{cmd}
         #{cmd.stdout.encode('UTF-8')}

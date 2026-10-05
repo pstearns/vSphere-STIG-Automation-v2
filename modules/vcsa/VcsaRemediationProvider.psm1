@@ -245,47 +245,43 @@ function Get-AssetVerificationArgs {
     }
 
     $ResolvedAPIPath = Join-Path $BaseAPIPath $SubProfile
-
-    # Resolve Inputs file
-    $InputArgString = ""
-    if (Test-Path $Config.InputsYml) {
-        $InputArgString = "--input-file $($Config.InputsYml)"
-    }
-
-    # Safely format --controls string
-    $ControlsString = ""
-    if ($Job.FixedRules -and $Job.FixedRules.Count -gt 0) {
-        $ControlsString = "--controls " + ($Job.FixedRules -join " ")
-    }
-
-    # Resolve target host
     $TargetHost = if ($Job.vCenterFQDN) { $Job.vCenterFQDN } else { $Job.VcenterObjName }
 
-    # Build clean argument token list
-    $ArgParts = @("exec", $ResolvedAPIPath)
+    # Build clean argument token array (NO string joining)
+    $ArgParts = [System.Collections.Generic.List[string]]::new()
+    $ArgParts.Add("exec")
+    $ArgParts.Add($ResolvedAPIPath)
 
     if ($Transport -eq "ssh") {
-        # Transport for SSH sub-profiles
-        $ArgParts += @("-t", "ssh://root@$TargetHost")
-        # InSpec CLI reads the password via --password parameter
-        # Note: $env:VCSA_ROOT_PASSWORD is set on the process by the orchestrator
-        $ArgParts += @("--password", $env:VCSA_ROOT_PASSWORD)
+        $ArgParts.Add("-t")
+        $ArgParts.Add("ssh://root@$TargetHost")
+        $ArgParts.Add("--password")
+        $ArgParts.Add($env:VCSA_ROOT_PASSWORD)
     } else {
-        # Transport for native vSphere API profile
-        $ArgParts += @("-t", "vmware://")
+        $ArgParts.Add("-t")
+        $ArgParts.Add("vmware://")
     }
 
-    $ArgParts += @("--reporter", "json:$DeltaJson")
+    $ArgParts.Add("--insecure")
 
-    if (-not [string]::IsNullOrWhiteSpace($InputArgString)) {
-        $ArgParts += $InputArgString
+    if (Test-Path $Config.InputsYml) {
+        $ArgParts.Add("--input-file")
+        $ArgParts.Add($Config.InputsYml)
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($ControlsString)) {
-        $ArgParts += $ControlsString
+    # Add targeted controls for delta verification
+    if ($Job.FixedRules -and $Job.FixedRules.Count -gt 0) {
+        $ArgParts.Add("--controls")
+        foreach ($Rule in $Job.FixedRules) {
+            $ArgParts.Add($Rule)
+        }
     }
 
-    return ($ArgParts -join " ").Trim()
+    $ArgParts.Add("--reporter")
+    $ArgParts.Add("json:$DeltaJson")
+
+    # Return pure token array
+    return ,$ArgParts.ToArray()
 }
 
 Export-ModuleMember -Function Get-AssetProviderConfig, Get-AssetObject, Invoke-AssetRemediation, Get-AssetVerificationArgs, Initialize-AssetProvider, Finalize-AssetProvider

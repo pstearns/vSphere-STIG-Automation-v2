@@ -19,33 +19,40 @@ If ONTAP is not configured with only one local account to be used as the account
   tag cci: ['CCI-001358', 'CCI-002111']
   tag nist: ['AC-2 (7) (a)', 'AC-2 a']
 
-  cmd = ontap_command('security login show -role admin -authentication-method password')
 
-  unique_accounts = cmd.stdout.scan(/^\S+\s+(?:console|http|ontapi|service-processor|ssh)\b/).map do |line|
-    line.split.first
-  end.uniq
+  # Query ONTAP for unlocked admin accounts using password auth
+  cmd = ontap_command('security login show -role admin -authentication-method password -is-account-locked no')
 
-  active_accounts = unique_accounts.reject { |acc| acc == 'admin' }
-  target_account = input('account_last_resort', value: 'nacadmin').to_s
+  # Filter the raw output lines to grab just the usernames
+  active_unlocked_accounts = []
+  cmd.stdout.each_line do |line|
+    # Only process lines containing 'password' to skip headers/footers
+    if line.include?('password')
+      account_name = line.split.first
+      active_unlocked_accounts << account_name
+    end
+  end
+  active_unlocked_accounts.uniq!
+
+  # Retrieve allowed accounts directly from inputs
+  allowed_accounts = Array(input('account_last_resort'))
 
   describe "ONTAP Local Admin Count" do
-    it "must have exactly one local administrative account" do
-
-      expect(active_accounts.count).to eq(1),
-        "Expected exactly 1 local admin account, but found #{active_accounts.count}: [#{active_accounts.join(', ')}]"
+    it "must have exactly one unlocked local administrative account" do
+      expect(active_unlocked_accounts.count).to eq(1),
+        "Expected exactly 1 active local admin account, but found #{active_unlocked_accounts.count}: [#{active_unlocked_accounts.join(', ')}]"
     end
   end
 
   describe "ONTAP Account of Last Resort Validation" do
-    it "must match the designated account: '#{target_account}'" do
-      expect(active_accounts).to include(target_account),
-        "The active local admin list [#{active_accounts.join(', ')}] does not contain the designated account '#{target_account}'."
+    it "must match one of the designated accounts: #{allowed_accounts}" do
+      expect(allowed_accounts).to include(active_unlocked_accounts.first),
+        "The active unlocked local admin '#{active_unlocked_accounts.first}' is not in the allowed list: #{allowed_accounts.join(', ')}."
     end
   end
 
   describe 'NOT A CHECK: FOR MANUAL REVIEW OF OUTPUT' do
     skip <<~EVIDENCE 
-    
       --- RAW OUTPUT FOR MANUAL VERIFICATION ---
       #{cmd}
       #{cmd.stdout.encode('UTF-8')}

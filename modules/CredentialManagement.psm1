@@ -594,7 +594,7 @@ function Show-F5Menu {
 
         switch ($choice) {
             "1" {
-                $fqdn = Read-Host "Enter the F5 BIG-IP FQDN (e.g. huarf5ltm.niprpnp.army.mil)"
+                $fqdn = Read-Host "Enter the F5 BIG-IP FQDN"
                 $adminCred = Get-Credential -Message "Enter F5 BIG-IP Admin Credentials"
                 Add-F5Credential -FQDN $fqdn -AdminCred $adminCred -FilePath $FilePath
                 Pause

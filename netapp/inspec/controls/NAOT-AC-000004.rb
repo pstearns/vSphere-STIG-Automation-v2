@@ -21,30 +21,64 @@ On the remote syslog server, use commands available to check for new account cre
   tag cci: ['CCI-002130']
   tag nist: ['AC-2 (4)']
 
-  allowed_syslog_servers = input('syslog_servers', value: [])
+  # Retrieve allowed syslog servers directly from inputs
+  allowed_syslog_servers = Array(input('syslog_servers'))
 
   cmd = ontap_command('cluster log-forwarding show')
 
-  describe cmd do
-    if allowed_syslog_servers.empty?
-      it 'has syslog servers defined in inputs.yml' do
-        fail 'No syslog servers were configured in inputs.yml. Please update configuration.'
+  # Sanitize to prevent UTF-8 multibyte parsing issues
+  sanitized_output = cmd.stdout.encode('UTF-8', invalid: :replace, undef: :replace, replace: '')
+
+  # Extract ONLY valid IPv4 addresses or FQDNs from the output
+  # This ignores SSH banners ("Last login time"), headers, and "IPspace: Default"
+  configured_destinations = []
+  sanitized_output.each_line do |line|
+    clean_line = line.strip
+
+    # Ignore prompt, banners, and header blocks
+    next if clean_line.include?('Last login') || 
+            clean_line.include?('Destination Host') || 
+            clean_line.include?('IPspace:') || 
+            clean_line.start_with?('----')
+
+    # Pull out IPv4 addresses (e.g. 139.231.125.151)
+    if (match = clean_line.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/))
+      configured_destinations << match[0]
+    end
+  end
+  configured_destinations.uniq!
+
+  describe 'Syslog Configuration Input Verification' do
+    it 'must have syslog servers defined in the inputs.yml' do
+      expect(allowed_syslog_servers).not_to be_empty,
+        'No syslog servers were configured in inputs.yml. Please update your profile configuration.'
+    end
+  end
+
+  if !allowed_syslog_servers.empty?
+    describe 'ONTAP Syslog Destinations' do
+      it 'must have at least one remote syslog destination configured' do
+        expect(configured_destinations).not_to be_empty,
+          "No remote syslog destinations were found in the command output.\n" \
+          "Raw output:\n#{cmd.stdout}"
       end
-    else
-      allowed_syslog_servers.each do |server|
-        it "forwards log events to: #{server}" do
-          expect(cmd.stdout).to match(Regexp.escape(server))
-        end
+
+      it 'must only forward logs to authorized syslog servers' do
+        # Checks if any destination found on the system is missing from inputs
+        unauthorized_servers = configured_destinations - allowed_syslog_servers
+        
+        expect(unauthorized_servers).to be_empty,
+          "The system is forwarding logs to unauthorized destinations: #{unauthorized_servers.join(', ')}.\n" \
+          "Authorized list: #{allowed_syslog_servers.join(', ')}"
       end
     end
   end
 
-  describe 'NOT A CHECK: FOR MANUAL REVIEW OF OUTPUT' do
-    skip <<~EVIDENCE 
-    
+  describe "NOT A CHECK: FOR MANUAL REVIEW OF OUTPUT" do
+    skip <<~EVIDENCE
       --- RAW OUTPUT FOR MANUAL VERIFICATION ---
       #{cmd}
-      #{cmd.stdout.encode('UTF-8')}
+      #{cmd.stdout.encode('UTF-8', invalid: :replace, undef: :replace, replace: '')}
     EVIDENCE
   end
 end

@@ -63,8 +63,11 @@ On the "Properties" tab, change the "VLAN ID" to one dedicated for IP-based stor
       nfsds = powercli_command(commandnfs).stdout
 
       if iscsi_hbas.empty? && vsanvmks.empty? && nfsds.empty?
-        describe '' do
-          skip "The ESXi host #{vmhost} is not using IP-based storage, so this control is N/A."
+        impact 0.0
+        describe 'IP-based Storage Check' do
+          it 'is Not Applicable because no IP-based storage interfaces or mounts exist' do
+            expect(true).to be true
+          end
         end
       else
         # Do any iSCSI VMKs have any services enabled?

@@ -94,6 +94,12 @@ function Invoke-AssetRemediation {
         [object]$Config,
         [object]$Creds
     )
+    # --- GUARD AGAINST DISCONNECTED / UNRESPONSIVE HOSTS
+    if ($AssetObject.ConnectionState -ne "Connected") {
+        Write-Warning "Host [$($AssetObject.Name)] is not connected (State: $($AssetObject.ConnectionState)). Aborting remediation."
+        return @()
+    }
+
     $SuccessFixes = [System.Collections.Generic.List[string]]::new()
     
     if (-not (Test-Path $Config.VariablesYml)) {
@@ -147,12 +153,28 @@ function Invoke-AssetRemediation {
 
 function Get-AssetVerificationArgs {
     param($Job, $Config, $DeltaJson)
-    
-    $InputArgString = ""
+
+    $ArgParts = [System.Collections.Generic.List[string]]::new()
+    $ArgParts.Add("exec")
+    $ArgParts.Add($Config.InspecAPI)
+    $ArgParts.Add("-t")
+    $ArgParts.Add("vmware://")
+    $ArgParts.Add("--insecure")
+    $ArgParts.Add("--input")
+    $ArgParts.Add("vmhostName=$($Job.VcenterObjName)")
+
     if (Test-Path $Config.InputsYml) {
-        $InputArgString = "--input-file '$($Config.InputsYml)'"
+        $ArgParts.Add("--input-file")
+        $ArgParts.Add($Config.InputsYml)
     }
-    
-    $Controls = $Job.FixedRules -join " "
-    return "exec '$($Config.InspecAPI)' -t vmware:// --input vmhostName='$($Job.VcenterObjName)' --reporter json:'$DeltaJson' $InputArgString --controls $Controls"
+
+    if ($Job.FixedRules -and $Job.FixedRules.Count -gt 0) {
+        $ArgParts.Add("--controls")
+        foreach ($r in $Job.FixedRules) { $ArgParts.Add($r) }
+    }
+
+    $ArgParts.Add("--reporter")
+    $ArgParts.Add("json:$DeltaJson")
+
+    return ,$ArgParts.ToArray()
 }

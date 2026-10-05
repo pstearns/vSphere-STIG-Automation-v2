@@ -3,7 +3,12 @@
 
 collection_id: 6
 
-account_last_resort: "nacadmin"
+account_last_resort: 
+  - "nacadmin"
+  - "admin"
+
+ignored_client_ca_certs:
+  - actviq
 
 syslog_servers:
   - 139.231.125.151
