@@ -4,6 +4,8 @@
 #              Wraps the official Broadcom VCSA 8.0 Hardening Playbook.
 #              State-safe: Dynamically opens and closes SSH ONCE per run.
 #              Aligned: Resolves dynamic sub-profiles and transport URIs.
+#              Overlay support: Untagged dual-write for PAM persistence
+#                               (Option A - does not touch official source).
 # =========================================================================
 
 $ProviderDir = Split-Path $MyInvocation.MyCommand.Path -Parent
@@ -128,7 +130,8 @@ function Invoke-AssetRemediation {
 
         $RolesPaths = @(
             "$($Config.PlaybookDir)/roles",
-            "/usr/share/stigs/photon/4.0/v2r3-srg/ansible"
+            "/usr/share/stigs/photon/4.0/v2r3-srg/ansible",
+            $script:VcsaOverlayRoot                                   # overlay available but not required for main run
         )
         $ProcessInfo.EnvironmentVariables["ANSIBLE_ROLES_PATH"] = ($RolesPaths -join ":")
         $ProcessInfo.EnvironmentVariables["ANSIBLE_HOST_KEY_CHECKING"] = "False"
@@ -172,7 +175,17 @@ function Invoke-AssetRemediation {
         Write-StigLog "[$VCSA_IP] Non-fatal playbook launch issue: $_. Proceeding to verify actual state..." -Severity WARN -Source "VcsaProvider"
     }
 
+    # ------------------------------------------------------------------
+    # Dual-write for VCSA PAM persistence
+    # ------------------------------------------------------------------
+    $NeedsPamPersist = $FixList | Where-Object { (Get-VcsaApplmgmtControls) -contains $_ }
+
+    if ($NeedsPamPersist) {
+        $null = Set-VCSAPamPersist -FQDN $VCSA_IP -RootPassword $RootPass
+    }
+
     # Queue all rules for verification so delta scan records ground-truth state
+    # (This list is intentionally unchanged so the Rule_Ver → InSpec → CKL contract is preserved)
     foreach ($Rule in $FixList) { $SuccessFixes.Add($Rule) }
 
     return $SuccessFixes.ToArray()

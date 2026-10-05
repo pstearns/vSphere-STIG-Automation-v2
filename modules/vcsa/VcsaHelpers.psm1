@@ -229,4 +229,123 @@ function Set-VCSASshState {
     }
 }
 
-Export-ModuleMember -Function Set-VCSABashShell, Get-VCSANetworkInfo, Set-VCSASshState
+<#
+.SYNOPSIS
+    Dual-write PAM / password-quality files to the VCSA persistence location.
+.DESCRIPTION
+    After the official Photon STIG role has updated the live PAM files, this
+    function mirrors the relevant files into /etc/applmgmt/appliance so the
+    settings survive reboot and appliance management operations.
+    Completely untagged – does not interfere with the Rule_Ver → InSpec workflow.
+.PARAMETER FQDN
+    The FQDN or IP of the target VCSA.
+.PARAMETER RootPassword
+    The raw plain-text root password.
+.OUTPUTS
+    [bool] $true if the dual-write completed successfully, $false otherwise.
+#>
+# Controls that require dual-write to /etc/applmgmt/appliance on VCSA
+$script:VcsaApplmgmtControls = @(
+    'PHTN-40-000004',   # faillock.conf (deny / fail_interval)
+    'PHTN-40-000035',   # ucredit
+    'PHTN-40-000036',   # lcredit
+    'PHTN-40-000037',   # dcredit
+    'PHTN-40-000038',   # difok
+    'PHTN-40-000043',   # pam_pwhistory remember
+    'PHTN-40-000044',   # minlen
+    'PHTN-40-000086',   # ocredit
+    'PHTN-40-000108',   # faillock unlock_time
+    'PHTN-40-000184',   # dictcheck
+    'PHTN-40-000192',   # pam_faillock in system-auth / system-account
+    'PHTN-40-000193',   # faillock silent
+    'PHTN-40-000194',   # faillock audit
+    'PHTN-40-000195',   # faillock even_deny_root
+    'PHTN-40-000196',   # faillock dir
+    'PHTN-40-000197',   # pam_pwquality.so module
+    'PHTN-40-000206',   # pam_faildelay
+    'PHTN-40-000235',   # enforce_for_root
+    'PHTN-40-000243',   # pam_pwhistory.so module
+    'PHTN-40-000247'    # remove nullok
+)
+
+function Get-VcsaApplmgmtControls {
+    return $script:VcsaApplmgmtControls
+}
+
+function Set-VCSAPamPersist {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$FQDN,
+
+        [Parameter(Mandatory = $true)]
+        [string]$RootPassword
+    )
+
+    Write-StigLog -Message "[$FQDN] Starting VCSA PAM persistence dual-write..." -Severity INFO -Source "PamPersist"
+
+    $env:SSHPASS = $RootPassword
+    $Success = $false
+
+    # All files that the Photon STIG role can modify for the controls above
+    $FilesToMirror = @(
+        @{ Src = "/etc/pam.d/system-password";    Dest = "/etc/applmgmt/appliance/system-password" },
+        @{ Src = "/etc/pam.d/system-auth";        Dest = "/etc/applmgmt/appliance/system-auth" },
+        @{ Src = "/etc/pam.d/system-account";     Dest = "/etc/applmgmt/appliance/system-account" },
+        @{ Src = "/etc/security/pwquality.conf";  Dest = "/etc/applmgmt/appliance/pwquality.conf" },
+        @{ Src = "/etc/security/pwhistory.conf";  Dest = "/etc/applmgmt/appliance/pwhistory.conf" },
+        @{ Src = "/etc/security/faillock.conf";   Dest = "/etc/applmgmt/appliance/faillock.conf" }   # ← added
+    )
+
+    try {
+        # 1. Ensure the persistence directory exists
+        $MkdirCmd = "mkdir -p /etc/applmgmt/appliance && chmod 755 /etc/applmgmt/appliance && chown root:root /etc/applmgmt/appliance"
+        $null = sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$FQDN $MkdirCmd 2>&1
+
+        if ($LASTEXITCODE -ne 0) {
+            Write-StigLog -Message "[$FQDN] Failed to create /etc/applmgmt/appliance" -Severity ERROR -Source "PamPersist"
+            return $false
+        }
+
+        # 2. Mirror each file that exists on the live system
+        foreach ($File in $FilesToMirror) {
+            $CopyCmd = @"
+if [ -f '$($File.Src)' ]; then
+    cp -f '$($File.Src)' '$($File.Dest)'
+    chmod 644 '$($File.Dest)'
+    chown root:root '$($File.Dest)'
+    echo "COPIED:$($File.Src)"
+else
+    echo "SKIPPED:$($File.Src)"
+fi
+"@
+
+            $Result = sshpass -e ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10 root@$FQDN $CopyCmd 2>&1
+            $Result = [string]$Result
+
+            if ($Result -match "COPIED:") {
+                Write-StigLog -Message "[$FQDN] Dual-wrote $($File.Src) → $($File.Dest)" -Severity SUCCESS -Source "PamPersist"
+            }
+            elseif ($Result -match "SKIPPED:") {
+                Write-StigLog -Message "[$FQDN] Skipped $($File.Src) (does not exist on live system)" -Severity INFO -Source "PamPersist"
+            }
+            else {
+                Write-StigLog -Message "[$FQDN] Unexpected result while copying $($File.Src): $Result" -Severity WARN -Source "PamPersist"
+            }
+        }
+
+        $Success = $true
+        Write-StigLog -Message "[$FQDN] PAM persistence dual-write completed." -Severity SUCCESS -Source "PamPersist"
+    }
+    catch {
+        Write-StigLog -Message "[$FQDN] Exception during PAM dual-write: $_" -Severity ERROR -Source "PamPersist"
+        $Success = $false
+    }
+    finally {
+        Remove-Item env:SSHPASS -ErrorAction SilentlyContinue
+    }
+
+    return $Success
+}
+
+Export-ModuleMember -Function Set-VCSABashShell, Get-VCSANetworkInfo, Set-VCSASshState, Set-VCSAPamPersist, Get-VcsaApplmgmtControls

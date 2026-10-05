@@ -1,0 +1,40 @@
+---
+- name: VCSA PAM Persistence Overlay (untagged dual-write)
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    pam_files:
+      - src: /etc/pam.d/system-password
+        dest: /etc/applmgmt/appliance/system-password
+      - src: /etc/pam.d/system-auth
+        dest: /etc/applmgmt/appliance/system-auth
+      - src: /etc/pam.d/system-account
+        dest: /etc/applmgmt/appliance/system-account
+      - src: /etc/security/pwquality.conf
+        dest: /etc/applmgmt/appliance/pwquality.conf
+      - src: /etc/security/pwhistory.conf
+        dest: /etc/applmgmt/appliance/pwhistory.conf
+
+  tasks:
+    - name: Ensure /etc/applmgmt/appliance exists
+      ansible.builtin.file:
+        path: /etc/applmgmt/appliance
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Dual-write PAM / password-quality files to applmgmt location
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: '0644'
+        force: true
+      loop: "{{ pam_files }}"
+      when: item.src is file
+      # Intentionally NO PHTN-40-0000xx tags
